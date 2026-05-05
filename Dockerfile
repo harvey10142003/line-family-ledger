@@ -10,7 +10,6 @@ RUN npm install --workspaces --include-workspace-root
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/server/node_modules ./server/node_modules
 COPY . .
 RUN npx prisma generate
 RUN npm --workspace server run build
@@ -19,7 +18,6 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/server/node_modules ./server/node_modules
 COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/server/package.json ./server/
 COPY --from=build /app/prisma ./prisma
