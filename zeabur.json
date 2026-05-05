@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.zeabur.app/template.json",
+  "name": "line-family-ledger",
+  "description": "LINE 家庭共同記帳",
+  "services": {
+    "server": {
+      "buildContext": ".",
+      "dockerfilePath": "docker/Dockerfile",
+      "port": 3000,
+      "envs": [
+        "DATABASE_URL",
+        "LINE_CHANNEL_SECRET",
+        "LINE_CHANNEL_ACCESS_TOKEN",
+        "LINE_LIFF_ID",
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_MODEL",
+        "GEMINI_API_KEY",
+        "GEMINI_MODEL",
+        "PUBLIC_URL"
+      ]
+    }
+  }
+}

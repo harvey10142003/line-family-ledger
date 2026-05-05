@@ -1,0 +1,107 @@
+# LINE 家庭共同記帳
+
+LINE@ 機器人 + LIFF Web，讓家人共用同一本記帳簿。  
+一對多架構：一個 LINE@ 帳號透過「家庭碼」服務無數個家庭。
+
+## 功能（規劃）
+
+| 階段 | 功能 |
+|------|------|
+| 1 | LINE 加好友建立/加入家庭、文字快速記帳、AI 自動分類、LIFF 月度明細 |
+| 2 | 收據拍照辨識（Gemini Flash）、共同記帳顯示記錄者、月報表（圓餅圖 / 成員占比） |
+| 3 | 預算 / 提醒 / 分帳結算 / Excel 匯出 |
+
+## 技術棧
+
+- **Backend**：Node.js 20 + Express + Prisma + PostgreSQL
+- **Frontend**：Next.js 15 (App Router) + Tailwind + LIFF SDK + Recharts
+- **AI**
+  - `deepseek-v4-flash` — 文字記帳 parse + 自動分類
+  - `gemini-2.5-flash` — 收據圖片 OCR
+- **部署**：Zeabur（PostgreSQL + 容器服務）
+- **Monorepo**：npm workspaces（`server` + `web`）
+
+## 資料模型
+
+```
+Family ──┬─ FamilyMember (LINE userId 綁定)
+         ├─ Category (預設 13 種，可自訂)
+         ├─ Transaction ─ Receipt (拍照來源才有)
+         └─ InviteLink
+```
+
+家庭碼為 6 碼大寫英數（避開 0/O/1/I），每家庭唯一。
+
+## 本地開發
+
+```bash
+# 1. 安裝依賴
+npm install
+
+# 2. 複製環境變數
+cp .env.example .env
+# 編輯 .env，填入 LINE / DeepSeek / Gemini / Postgres
+
+# 3. 建表
+npx prisma migrate dev --name init
+
+# 4. 同時跑 server (3000) + web (3001)
+npm run dev
+```
+
+## 環境變數
+
+見 `.env.example`，重點：
+
+- `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN`：LINE 官方帳號
+- `LINE_LIFF_ID` / `NEXT_PUBLIC_LIFF_ID`：LIFF App ID
+- `DEEPSEEK_API_KEY`：DeepSeek V4-Flash
+- `GEMINI_API_KEY`：Google Gemini Flash（拍照辨識）
+- `DATABASE_URL`：PostgreSQL 連線字串
+
+## 目錄結構
+
+```
+line-family-ledger/
+├── server/                Express + LINE webhook + AI
+│   ├── src/
+│   │   ├── line/
+│   │   │   ├── client.ts
+│   │   │   └── handlers/  follow / postback / message-text / message-image
+│   │   ├── ai/            deepseek + gemini (待補)
+│   │   ├── services/      family / transaction / category
+│   │   └── routes/        webhook / liff
+├── web/                   Next.js LIFF (儀表板 / 報表)
+├── prisma/                schema + seed (預設分類)
+└── docker/                Dockerfile
+```
+
+## LINE 對話流程
+
+```
+[加好友]
+  → Bot: 建立新家庭 / 加入現有家庭 (Quick Reply)
+[建立]
+  → Bot: 請輸入家庭名稱
+  → User: 施家
+  → Bot: 建立成功！家庭碼 AB12CD，邀請連結 https://liff.line.me/...
+[加入]
+  → Bot: 請輸入 6 碼家庭碼
+  → User: AB12CD
+  → Bot: 成功加入「施家」
+[記帳]
+  → User: 午餐 120
+  → Bot: 已記錄：餐飲 $120 (AI 自動分類)  ← 階段 1 待實作
+  → User: [收據照片]
+  → Bot: 看到金額 $358，分類「餐飲」，確認嗎？  ← 階段 2 待實作
+```
+
+## Roadmap
+
+- [x] 專案骨架 + Prisma schema
+- [x] LINE webhook + 家庭碼建立 / 加入流程
+- [x] LIFF 首頁骨架（顯示家庭資訊）
+- [ ] DeepSeek 文字 parse → Transaction 寫入
+- [ ] Gemini 收據 OCR → Transaction 寫入
+- [ ] LIFF 明細列表 + 月報表圓餅圖
+- [ ] 預算 / 提醒 / 分帳
