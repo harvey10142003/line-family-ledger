@@ -1,5 +1,9 @@
 # Server-only Dockerfile (Zeabur 部署 server)
-FROM node:20-slim AS deps
+# Base 用 node:20-slim + 顯式安裝 openssl（Prisma 需要）
+FROM node:20-slim AS base
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+FROM base AS deps
 WORKDIR /app
 ENV NODE_ENV=development
 COPY package.json package-lock.json* ./
@@ -8,7 +12,7 @@ COPY web/package.json web/
 COPY prisma ./prisma
 RUN npm install --workspaces --include-workspace-root --include=dev
 
-FROM node:20-slim AS build
+FROM base AS build
 WORKDIR /app
 ENV NODE_ENV=development
 COPY --from=deps /app/node_modules ./node_modules
@@ -16,7 +20,7 @@ COPY . .
 RUN npx prisma generate
 RUN npm --workspace server run build
 
-FROM node:20-slim AS runtime
+FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
