@@ -5,7 +5,7 @@
   "services": {
     "server": {
       "buildContext": ".",
-      "dockerfilePath": "docker/Dockerfile",
+      "dockerfilePath": "Dockerfile",
       "port": 3000,
       "envs": [
         "DATABASE_URL",

@@ -73,7 +73,7 @@ line-family-ledger/
 │   │   └── routes/        webhook / liff
 ├── web/                   Next.js LIFF (儀表板 / 報表)
 ├── prisma/                schema + seed (預設分類)
-└── docker/                Dockerfile
+└── Dockerfile             Zeabur 部署用
 ```
 
 ## LINE 對話流程
