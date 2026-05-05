@@ -1,14 +1,16 @@
 # Server-only Dockerfile (Zeabur 部署 server)
 FROM node:20-alpine AS deps
 WORKDIR /app
+ENV NODE_ENV=development
 COPY package.json package-lock.json* ./
 COPY server/package.json server/
 COPY web/package.json web/
 COPY prisma ./prisma
-RUN npm install --workspaces --include-workspace-root
+RUN npm install --workspaces --include-workspace-root --include=dev
 
 FROM node:20-alpine AS build
 WORKDIR /app
+ENV NODE_ENV=development
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
