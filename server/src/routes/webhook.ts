@@ -1,11 +1,12 @@
 import { Router, type Request, type Response } from 'express';
-import type { WebhookEvent, MessageEvent, TextEventMessage, ImageEventMessage } from '@line/bot-sdk';
+import type { WebhookEvent, MessageEvent, TextEventMessage, ImageEventMessage, FileEventMessage } from '@line/bot-sdk';
 import { verifyLineSignature } from '../line/client';
 import { logger } from '../logger';
 import { handleFollow } from '../line/handlers/follow';
 import { handlePostback } from '../line/handlers/postback';
 import { handleTextMessage } from '../line/handlers/message-text';
 import { handleImageMessage } from '../line/handlers/message-image';
+import { handleFileMessage } from '../line/handlers/message-file';
 
 export const webhookRouter = Router();
 
@@ -49,6 +50,9 @@ async function dispatch(event: WebhookEvent): Promise<void> {
       }
       if (event.message.type === 'image') {
         return handleImageMessage(event as MessageEvent & { message: ImageEventMessage });
+      }
+      if (event.message.type === 'file') {
+        return handleFileMessage(event as MessageEvent & { message: FileEventMessage });
       }
       return;
     }

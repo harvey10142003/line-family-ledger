@@ -8,8 +8,10 @@ LINE@ 機器人 + LIFF Web，讓家人共用同一本記帳簿。
 | 階段 | 功能 |
 |------|------|
 | 1 | LINE 加好友建立/加入家庭、文字快速記帳、AI 自動分類、LIFF 月度明細 |
-| 2 | 收據拍照辨識（Gemini Flash）、共同記帳顯示記錄者、月報表（圓餅圖 / 成員占比） |
+| 2 | 收據拍照辨識、**PDF 帳單匯入（信用卡月帳單一次帶入幾十筆）**、共同記帳顯示記錄者、月報表（圓餅圖 / 成員占比） |
 | 3 | 預算 / 提醒 / 分帳結算 / Excel 匯出 |
+
+> 階段 2 的拍照辨識（image message）跟 PDF 帳單匯入（file message）共用 Gemini multimodal pipeline，預計同時做。LINE 桌面版可直接拖 PDF 進對話框。
 
 ## 技術棧
 
@@ -91,6 +93,8 @@ line-family-ledger/
   → Bot: 已記錄：餐飲 $120 (AI 自動分類)  ← 階段 1 待實作
   → User: [收據照片]
   → Bot: 看到金額 $358，分類「餐飲」，確認嗎？  ← 階段 2 待實作
+  → User: [信用卡月帳單.pdf]
+  → Bot: 看到 4 月信用卡帳單，14 筆交易 $48,562，預覽如下…  ← 階段 2 待實作
 ```
 
 ## Roadmap
@@ -98,7 +102,9 @@ line-family-ledger/
 - [x] 專案骨架 + Prisma schema
 - [x] LINE webhook + 家庭碼建立 / 加入流程
 - [x] LIFF 首頁骨架（顯示家庭資訊）
-- [ ] DeepSeek 文字 parse → Transaction 寫入
-- [ ] Gemini 收據 OCR → Transaction 寫入
-- [ ] LIFF 明細列表 + 月報表圓餅圖
-- [ ] 預算 / 提醒 / 分帳
+- [x] LINE Messaging API 對接（webhook 簽章驗證、follow / postback / message dispatch）
+- [ ] **階段 1**：Gemini 文字 parse → Transaction 寫入 + 自動分類
+- [ ] **階段 2a**：Gemini 收據 OCR（image message）
+- [ ] **階段 2b**：Gemini PDF 帳單批次匯入（file message，信用卡 / 水電瓦斯）
+- [ ] **階段 2c**：LIFF 明細列表 + 月報表圓餅圖 + 成員占比
+- [ ] **階段 3**：預算 / 提醒 / 分帳結算 / Excel 匯出
