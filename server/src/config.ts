@@ -17,14 +17,9 @@ export const config = {
     liffId: required('LINE_LIFF_ID'),
   },
 
-  deepseek: {
-    apiKey: required('DEEPSEEK_API_KEY'),
-    baseUrl: process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com',
-    model: process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-flash',
-  },
-
   gemini: {
     apiKey: required('GEMINI_API_KEY'),
+    // 同一個模型負責文字記帳 parse 跟收據圖片 OCR
     model: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
   },
 };

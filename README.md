@@ -15,9 +15,7 @@ LINE@ 機器人 + LIFF Web，讓家人共用同一本記帳簿。
 
 - **Backend**：Node.js 20 + Express + Prisma + PostgreSQL
 - **Frontend**：Next.js 15 (App Router) + Tailwind + LIFF SDK + Recharts
-- **AI**
-  - `deepseek-v4-flash` — 文字記帳 parse + 自動分類
-  - `gemini-2.5-flash` — 收據圖片 OCR
+- **AI**：`gemini-2.5-flash` 同時負責文字記帳 parse + 收據圖片 OCR
 - **部署**：Zeabur（PostgreSQL + 容器服務）
 - **Monorepo**：npm workspaces（`server` + `web`）
 
@@ -55,8 +53,7 @@ npm run dev
 
 - `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN`：LINE 官方帳號
 - `LINE_LIFF_ID` / `NEXT_PUBLIC_LIFF_ID`：LIFF App ID
-- `DEEPSEEK_API_KEY`：DeepSeek V4-Flash
-- `GEMINI_API_KEY`：Google Gemini Flash（拍照辨識）
+- `GEMINI_API_KEY`：Google Gemini 2.5 Flash（文字 parse + 拍照辨識）
 - `DATABASE_URL`：PostgreSQL 連線字串
 
 ## 目錄結構
@@ -68,7 +65,7 @@ line-family-ledger/
 │   │   ├── line/
 │   │   │   ├── client.ts
 │   │   │   └── handlers/  follow / postback / message-text / message-image
-│   │   ├── ai/            deepseek + gemini (待補)
+│   │   ├── ai/            gemini (文字 parse + vision OCR)
 │   │   ├── services/      family / transaction / category
 │   │   └── routes/        webhook / liff
 ├── web/                   Next.js LIFF (儀表板 / 報表)
