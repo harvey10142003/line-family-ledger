@@ -16,6 +16,7 @@ export type ParsedTransaction = {
   categoryName: string;
   note: string;
   type: 'EXPENSE' | 'INCOME';
+  accountName?: string | null; // 付款帳戶提示，對不上家庭帳戶則 null
 };
 
 export type ParsedReceipt = {
@@ -36,6 +37,7 @@ export type ParsedBillItem = ParsedTransaction & { paidAt?: string };
 export async function parseTransactionText(
   text: string,
   categories: CategoryHint[],
+  accountNames: string[] = [],
 ): Promise<ParsedTransaction | null> {
   const categoryNames = categories.map((c) => c.name);
   const expenseNames = categories.filter((c) => c.type === 'EXPENSE').map((c) => c.name);
@@ -73,8 +75,15 @@ export async function parseTransactionText(
             type: SchemaType.STRING,
             description: '備註，通常是品項或描述，例如「午餐」「7-11 飲料」。沒有就空字串',
           },
+          accountName: {
+            type: SchemaType.STRING,
+            description:
+              accountNames.length > 0
+                ? `付款帳戶/方式，只能從這些挑：${accountNames.join('、')}；句子沒提到付款方式就回空字串`
+                : '留空字串',
+          },
         },
-        required: ['isTransaction', 'amount', 'type', 'categoryName', 'note'],
+        required: ['isTransaction', 'amount', 'type', 'categoryName', 'note', 'accountName'],
       },
     },
   });
@@ -89,6 +98,9 @@ export async function parseTransactionText(
     `- 收入分類只能從：${incomeNames.join('、')}`,
     '- 找不到完全對應的分類時，支出用「其他支出」、收入用「其他收入」。',
     '- note 放品項描述（去掉金額數字），例如「午餐 120」的 note 是「午餐」。',
+    accountNames.length > 0
+      ? `- 若句子提到付款方式（如「現金」「刷卡」「刷台新」「LINE Pay」），對應到帳戶清單：${accountNames.join('、')}；對不上或沒提到就 accountName 空字串。`
+      : '- accountName 一律空字串。',
     '- 如果這句話根本不是記帳（例如打招呼、問問題），isTransaction 設 false。',
     '',
     `使用者輸入：「${text}」`,
@@ -103,6 +115,7 @@ export async function parseTransactionText(
       type: 'EXPENSE' | 'INCOME';
       categoryName: string;
       note: string;
+      accountName?: string;
     };
 
     if (!parsed.isTransaction || !parsed.amount || parsed.amount <= 0) return null;
@@ -113,11 +126,15 @@ export async function parseTransactionText(
       categoryName = parsed.type === 'INCOME' ? '其他收入' : '其他支出';
     }
 
+    // 帳戶提示：對不上家庭帳戶就 null（交給 service 用預設帳戶）
+    const accountName = parsed.accountName && accountNames.includes(parsed.accountName) ? parsed.accountName : null;
+
     return {
       amount: Math.round(parsed.amount * 100) / 100,
       categoryName,
       note: (parsed.note ?? '').trim(),
       type: parsed.type === 'INCOME' ? 'INCOME' : 'EXPENSE',
+      accountName,
     };
   } catch (err) {
     logger.error({ err, text }, 'parseTransactionText failed');

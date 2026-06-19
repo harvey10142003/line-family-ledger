@@ -1,7 +1,15 @@
 import { Router } from 'express';
 import { prisma } from '../prisma';
-import { getMonthlySummary, getMonthlyTransactions, getSettlement } from '../services/transaction';
+import { getMonthlySummary, getMonthlyTransactions, getMonthlyTransfers, getSettlement } from '../services/transaction';
 import { getBudgets, setBudget, getBudgetStatus } from '../services/budget';
+import {
+  getAccountsWithBalances,
+  createAccount,
+  updateAccount,
+  createTransfer,
+  resolveAccountId,
+} from '../services/account';
+import type { AccountType } from '@prisma/client';
 
 export const liffRouter = Router();
 
@@ -115,6 +123,129 @@ liffRouter.get('/settlement', async (req, res) => {
   return res.json(await getSettlement(member.familyId, month));
 });
 
+// 帳戶清單（含餘額）
+liffRouter.get('/accounts', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const includeArchived = req.query.includeArchived === '1';
+  return res.json({ accounts: await getAccountsWithBalances(member.familyId, includeArchived) });
+});
+
+// 新增帳戶
+liffRouter.post('/accounts', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const { name, type, icon, openingBalance } = (req.body ?? {}) as {
+    name?: string;
+    type?: AccountType;
+    icon?: string | null;
+    openingBalance?: number;
+  };
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+  try {
+    const acc = await createAccount({ familyId: member.familyId, name: name.trim(), type, icon, openingBalance });
+    return res.json(acc);
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
+// 編輯帳戶（名稱/類型/圖示/期初/預設/封存）
+liffRouter.put('/accounts/:id', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  try {
+    const acc = await updateAccount({
+      familyId: member.familyId,
+      accountId: req.params.id,
+      name: body.name as string | undefined,
+      type: body.type as AccountType | undefined,
+      icon: body.icon as string | null | undefined,
+      openingBalance: body.openingBalance as number | undefined,
+      isDefault: body.isDefault as boolean | undefined,
+      isArchived: body.isArchived as boolean | undefined,
+    });
+    return res.json(acc);
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
+// 轉帳列表
+liffRouter.get('/transfers', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const month = resolveMonth(req.query.month);
+  return res.json({ month, items: await getMonthlyTransfers(member.familyId, month) });
+});
+
+// 建立轉帳
+liffRouter.post('/transfers', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const { fromAccountId, toAccountId, amount, note } = (req.body ?? {}) as {
+    fromAccountId?: string;
+    toAccountId?: string;
+    amount?: number;
+    note?: string | null;
+  };
+  if (!fromAccountId || !toAccountId || typeof amount !== 'number') {
+    return res.status(400).json({ error: 'fromAccountId, toAccountId, amount required' });
+  }
+  try {
+    const tr = await createTransfer({
+      familyId: member.familyId,
+      memberId: member.id,
+      fromAccountId,
+      toAccountId,
+      amount,
+      note,
+    });
+    return res.json(tr);
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
+// 改某筆交易的帳戶
+liffRouter.patch('/transactions/:id/account', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const { accountId } = (req.body ?? {}) as { accountId?: string | null };
+  // 驗證交易屬於該家庭
+  const tx = await prisma.transaction.findFirst({ where: { id: req.params.id, familyId: member.familyId } });
+  if (!tx) return res.status(404).json({ error: 'transaction not found' });
+  // 驗證帳戶屬於該家庭（null 代表取消指定）
+  if (accountId) {
+    const acc = await prisma.account.findFirst({ where: { id: accountId, familyId: member.familyId } });
+    if (!acc) return res.status(400).json({ error: 'invalid accountId' });
+  }
+  const updated = await prisma.transaction.update({
+    where: { id: req.params.id },
+    data: { accountId: accountId ?? null },
+  });
+  return res.json({ id: updated.id, accountId: updated.accountId });
+});
+
 // CSV 匯出（Excel 可開，加 UTF-8 BOM 避免中文亂碼）
 liffRouter.get('/export', async (req, res) => {
   const lineUserId = req.header('x-line-user-id');
@@ -129,12 +260,13 @@ liffRouter.get('/export', async (req, res) => {
     const s = String(v ?? '');
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const header = ['日期', '類型', '分類', '備註', '金額', '記錄者', '來源'];
+  const header = ['日期', '類型', '分類', '帳戶', '備註', '金額', '記錄者', '來源'];
   const lines = items.map((t) =>
     [
       t.paidAt.slice(0, 10),
       t.type === 'INCOME' ? '收入' : '支出',
       t.categoryName,
+      t.accountName ?? '',
       t.note ?? '',
       t.amount,
       t.memberName,

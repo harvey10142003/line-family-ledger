@@ -20,6 +20,7 @@ export async function recordTransaction(params: {
   parsed: ParsedTransaction;
   source?: 'TEXT' | 'PHOTO' | 'MANUAL';
   paidAt?: Date;
+  accountId?: string | null;
 }) {
   const { familyId, memberId, parsed } = params;
 
@@ -46,8 +47,9 @@ export async function recordTransaction(params: {
       note: parsed.note || null,
       paidAt: params.paidAt ?? new Date(),
       source: params.source ?? 'TEXT',
+      accountId: params.accountId ?? null,
     },
-    include: { category: true, member: true },
+    include: { category: true, member: true, account: true },
   });
 
   return tx;
@@ -59,6 +61,7 @@ export async function recordTransactionsBatch(params: {
   memberId: string;
   items: ParsedBillItem[];
   source?: 'TEXT' | 'PHOTO' | 'MANUAL';
+  accountId?: string | null;
 }): Promise<{ count: number; total: number }> {
   const { familyId, memberId, items } = params;
 
@@ -80,6 +83,7 @@ export async function recordTransactionsBatch(params: {
         note: it.note || null,
         paidAt: it.paidAt ? new Date(`${it.paidAt}T12:00:00+08:00`) : new Date(),
         source: params.source ?? 'MANUAL',
+        accountId: params.accountId ?? null,
       };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null);
@@ -206,12 +210,31 @@ export async function getSettlement(familyId: string, month: string): Promise<Se
   };
 }
 
+// 月度轉帳列表
+export async function getMonthlyTransfers(familyId: string, month: string) {
+  const { start, end } = monthRange(month);
+  const rows = await prisma.transfer.findMany({
+    where: { familyId, transferredAt: { gte: start, lt: end } },
+    include: { fromAccount: true, toAccount: true, member: true },
+    orderBy: { transferredAt: 'desc' },
+  });
+  return rows.map((t) => ({
+    id: t.id,
+    amount: Number(t.amount),
+    fromName: t.fromAccount.name,
+    toName: t.toAccount.name,
+    note: t.note,
+    memberName: t.member.displayName,
+    transferredAt: t.transferredAt.toISOString(),
+  }));
+}
+
 // 月度明細列表（新到舊）
 export async function getMonthlyTransactions(familyId: string, month: string) {
   const { start, end } = monthRange(month);
   const txs = await prisma.transaction.findMany({
     where: { familyId, paidAt: { gte: start, lt: end } },
-    include: { category: true, member: true },
+    include: { category: true, member: true, account: true },
     orderBy: { paidAt: 'desc' },
   });
 
@@ -223,6 +246,9 @@ export async function getMonthlyTransactions(familyId: string, month: string) {
     categoryIcon: t.category.icon,
     note: t.note,
     memberName: t.member.displayName,
+    accountId: t.accountId,
+    accountName: t.account?.name ?? null,
+    accountIcon: t.account?.icon ?? null,
     paidAt: t.paidAt.toISOString(),
     source: t.source,
   }));

@@ -9,8 +9,20 @@ export async function apiGet<T>(path: string, lineUserId: string): Promise<T> {
 }
 
 export async function apiPut<T>(path: string, lineUserId: string, body: unknown): Promise<T> {
+  return apiSend<T>('PUT', path, lineUserId, body);
+}
+
+export async function apiPost<T>(path: string, lineUserId: string, body: unknown): Promise<T> {
+  return apiSend<T>('POST', path, lineUserId, body);
+}
+
+export async function apiPatch<T>(path: string, lineUserId: string, body: unknown): Promise<T> {
+  return apiSend<T>('PATCH', path, lineUserId, body);
+}
+
+async function apiSend<T>(method: string, path: string, lineUserId: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
-    method: 'PUT',
+    method,
     headers: { 'x-line-user-id': lineUserId, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });

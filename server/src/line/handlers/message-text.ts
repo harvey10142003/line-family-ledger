@@ -7,6 +7,7 @@ import { prisma } from '../../prisma';
 import { parseTransactionText } from '../../ai/gemini';
 import { recordTransaction } from '../../services/transaction';
 import { getBudgetAlert } from '../../services/budget';
+import { ensureDefaultAccounts, resolveAccountId } from '../../services/account';
 import { logger } from '../../logger';
 
 // 用戶可能用這些字眼叫出選單
@@ -51,16 +52,24 @@ export async function handleTextMessage(
     return;
   }
 
-  // 階段 1 — 把文字丟 Gemini 解析成「金額 + 分類 + 備註」並寫入 Transaction
-  const categories = await prisma.category.findMany({
-    where: { familyId: member.familyId },
-    select: { name: true, type: true },
-    orderBy: { sortOrder: 'asc' },
-  });
+  // 階段 1 — 把文字丟 Gemini 解析成「金額 + 分類 + 備註 + 帳戶」並寫入 Transaction
+  await ensureDefaultAccounts(member.familyId);
+  const [categories, accounts] = await Promise.all([
+    prisma.category.findMany({
+      where: { familyId: member.familyId },
+      select: { name: true, type: true },
+      orderBy: { sortOrder: 'asc' },
+    }),
+    prisma.account.findMany({
+      where: { familyId: member.familyId, isArchived: false },
+      select: { name: true },
+      orderBy: { sortOrder: 'asc' },
+    }),
+  ]);
 
   let parsed;
   try {
-    parsed = await parseTransactionText(text, categories);
+    parsed = await parseTransactionText(text, categories, accounts.map((a) => a.name));
   } catch (err) {
     logger.error({ err, userId }, 'parseTransactionText threw');
     parsed = null;
@@ -79,15 +88,18 @@ export async function handleTextMessage(
     return;
   }
 
+  const accountId = await resolveAccountId(member.familyId, parsed.accountName);
   const tx = await recordTransaction({
     familyId: member.familyId,
     memberId: member.id,
     parsed,
+    accountId,
   });
 
   const icon = tx.category.icon ?? (parsed.type === 'INCOME' ? '💰' : '💸');
   const sign = parsed.type === 'INCOME' ? '+' : '';
   const noteLine = tx.note ? `\n📝 ${tx.note}` : '';
+  const acctLine = tx.account ? `\n💳 ${tx.account.icon ?? ''}${tx.account.name}` : '';
 
   // 支出才檢查預算提醒
   const alert = parsed.type === 'EXPENSE' ? await getBudgetAlert(member.familyId) : null;
@@ -98,7 +110,7 @@ export async function handleTextMessage(
     messages: [
       {
         type: 'text',
-        text: `已記帳 ✅\n${icon} ${tx.category.name}　${sign}$${Number(tx.amount).toLocaleString('en-US')}${noteLine}\n記錄者：${member.displayName}${alertLine}`,
+        text: `已記帳 ✅\n${icon} ${tx.category.name}　${sign}$${Number(tx.amount).toLocaleString('en-US')}${noteLine}${acctLine}\n記錄者：${member.displayName}${alertLine}`,
       },
     ],
   });

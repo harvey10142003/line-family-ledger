@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { initLiff, getProfile } from '@/lib/liff';
 import { apiGet, apiPut, apiDownload } from '@/lib/api';
+import AccountsSection from '@/components/AccountsSection';
 
 type MeResp =
   | { joined: false }
@@ -29,6 +30,8 @@ type TxItem = {
   categoryIcon: string | null;
   note: string | null;
   memberName: string;
+  accountName: string | null;
+  accountIcon: string | null;
   paidAt: string;
 };
 
@@ -236,6 +239,9 @@ export default function Home() {
         <p className="mt-1 text-xs text-gray-400">設 0 即取消預算。每月循環套用。</p>
       </section>
 
+      {/* 帳戶 / 付款方式（餘額不分月，獨立載入）*/}
+      {userId && <AccountsSection userId={userId} />}
+
       {/* 分類圓餅圖 */}
       <section className="rounded-lg bg-white p-4 shadow-sm">
         <h2 className="mb-2 text-sm font-semibold text-gray-700">支出分類占比</h2>
@@ -338,6 +344,7 @@ export default function Home() {
                   </p>
                   <p className="text-xs text-gray-400">
                     {t.paidAt.slice(5, 10)}　{t.memberName}
+                    {t.accountName ? `　${t.accountIcon ?? ''}${t.accountName}` : ''}
                   </p>
                 </div>
                 <span className={`shrink-0 font-medium ${t.type === 'INCOME' ? 'text-emerald-500' : 'text-gray-800'}`}>

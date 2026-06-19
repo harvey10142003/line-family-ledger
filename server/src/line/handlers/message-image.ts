@@ -5,6 +5,7 @@ import { prisma } from '../../prisma';
 import { parseReceiptImage } from '../../ai/gemini';
 import { recordTransaction } from '../../services/transaction';
 import { getBudgetAlert } from '../../services/budget';
+import { resolveAccountId } from '../../services/account';
 import { logger } from '../../logger';
 
 // LINE blob client 回傳 Readable stream，收集成 Buffer
@@ -68,6 +69,7 @@ export async function handleImageMessage(
   const note = receipt.merchant || receipt.items[0]?.name || '收據';
   const paidAt = receipt.paidAt ? new Date(`${receipt.paidAt}T12:00:00+08:00`) : undefined;
 
+  const accountId = await resolveAccountId(member.familyId, null);
   const tx = await recordTransaction({
     familyId: member.familyId,
     memberId: member.id,
@@ -79,6 +81,7 @@ export async function handleImageMessage(
     },
     source: 'PHOTO',
     paidAt,
+    accountId,
   });
 
   const dateLine = receipt.paidAt ? `\n📅 ${receipt.paidAt}` : '';

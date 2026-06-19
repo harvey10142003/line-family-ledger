@@ -4,6 +4,7 @@ import { findMemberByLineId } from '../../services/family';
 import { prisma } from '../../prisma';
 import { parseBillFile, type ParsedBillItem } from '../../ai/gemini';
 import { recordTransactionsBatch } from '../../services/transaction';
+import { resolveAccountId } from '../../services/account';
 import { logger } from '../../logger';
 
 // 暫存待確認的帳單匯入（MVP in-memory，正式部署換 Redis）
@@ -130,11 +131,13 @@ export async function confirmPendingBill(userId: string, replyToken: string): Pr
   }
   pendingBills.delete(userId);
 
+  const accountId = await resolveAccountId(bill.familyId, null);
   const { count, total } = await recordTransactionsBatch({
     familyId: bill.familyId,
     memberId: bill.memberId,
     items: bill.items,
     source: 'MANUAL',
+    accountId,
   });
 
   await lineClient.replyMessage({

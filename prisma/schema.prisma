@@ -24,6 +24,8 @@ model Family {
   transactions Transaction[]
   invites      InviteLink[]
   budgets      Budget[]
+  accounts     Account[]
+  transfers    Transfer[]
 
   @@index([ownerLineId])
 }
@@ -40,6 +42,7 @@ model FamilyMember {
 
   family       Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  transfers    Transfer[]
 
   @@unique([familyId, lineUserId])
   @@index([lineUserId])
@@ -78,6 +81,7 @@ model Transaction {
   familyId   String
   memberId   String
   categoryId String
+  accountId  String? // 付款帳戶（現金/銀行/信用卡/電子支付）；null = 未指定（含舊資料）
   amount     Decimal           @db.Decimal(12, 2)
   note       String?
   paidAt     DateTime
@@ -87,11 +91,13 @@ model Transaction {
   family   Family       @relation(fields: [familyId], references: [id], onDelete: Cascade)
   member   FamilyMember @relation(fields: [memberId], references: [id])
   category Category     @relation(fields: [categoryId], references: [id])
+  account  Account?     @relation(fields: [accountId], references: [id])
   receipt  Receipt?
 
   @@index([familyId, paidAt])
   @@index([familyId, categoryId])
   @@index([memberId])
+  @@index([accountId])
 }
 
 enum TransactionSource {
@@ -113,6 +119,56 @@ model Budget {
   category Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
   @@index([familyId])
+}
+
+// ===== 帳戶（= 付款方式：現金/銀行/信用卡/電子支付）=====
+model Account {
+  id             String      @id @default(cuid())
+  familyId       String
+  name           String
+  type           AccountType @default(CASH)
+  icon           String?
+  openingBalance Decimal     @db.Decimal(12, 2) @default(0) // 期初餘額
+  isDefault      Boolean     @default(false) // 記帳未指定時的預設帳戶
+  isArchived     Boolean     @default(false)
+  sortOrder      Int         @default(0)
+  createdAt      DateTime    @default(now())
+
+  family        Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  transactions  Transaction[]
+  transfersOut  Transfer[]    @relation("TransferFrom")
+  transfersIn   Transfer[]    @relation("TransferTo")
+
+  @@unique([familyId, name])
+  @@index([familyId])
+}
+
+enum AccountType {
+  CASH         // 現金
+  BANK         // 銀行
+  CREDIT_CARD  // 信用卡
+  EPAYMENT     // 電子支付（LINE Pay / 街口…）
+  OTHER
+}
+
+// ===== 帳戶間轉帳（不計入收支，只移動餘額）=====
+model Transfer {
+  id            String   @id @default(cuid())
+  familyId      String
+  memberId      String
+  fromAccountId String
+  toAccountId   String
+  amount        Decimal  @db.Decimal(12, 2)
+  note          String?
+  transferredAt DateTime
+  createdAt     DateTime @default(now())
+
+  family      Family       @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  member      FamilyMember @relation(fields: [memberId], references: [id])
+  fromAccount Account      @relation("TransferFrom", fields: [fromAccountId], references: [id])
+  toAccount   Account      @relation("TransferTo", fields: [toAccountId], references: [id])
+
+  @@index([familyId, transferredAt])
 }
 
 // ===== 收據圖片 =====
