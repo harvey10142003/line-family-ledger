@@ -3,6 +3,7 @@ import { lineClient } from '../client';
 import { createFamily, joinFamily, findMemberByLineId } from '../../services/family';
 import { buildInviteUrl } from './follow';
 import { confirmPendingBill, cancelPendingBill } from './message-file';
+import { confirmPendingAccount, cancelPendingAccount } from './pending-account';
 import { logger } from '../../logger';
 
 // 暫存使用者狀態：等待輸入家庭名稱 / 家庭碼
@@ -48,6 +49,14 @@ export async function handlePostback(event: PostbackEvent): Promise<void> {
 
     case 'cancel_bill':
       await cancelPendingBill(userId, event.replyToken);
+      return;
+
+    case 'confirm_add_account':
+      await confirmPendingAccount(userId, event.replyToken);
+      return;
+
+    case 'cancel_add_account':
+      await cancelPendingAccount(userId, event.replyToken);
       return;
 
     default:

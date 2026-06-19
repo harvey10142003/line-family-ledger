@@ -7,7 +7,9 @@ import { prisma } from '../../prisma';
 import { parseTransactionText } from '../../ai/gemini';
 import { recordTransaction } from '../../services/transaction';
 import { getBudgetAlert } from '../../services/budget';
-import { ensureDefaultAccounts, resolveAccountId } from '../../services/account';
+import { ensureDefaultAccounts, resolveAccountId, findAccountIdByName } from '../../services/account';
+import { resolveCreditCardId } from '../../services/creditcard';
+import { setPendingAccount, buildAddAccountQuickReply } from './pending-account';
 import { logger } from '../../logger';
 
 // 用戶可能用這些字眼叫出選單
@@ -52,9 +54,9 @@ export async function handleTextMessage(
     return;
   }
 
-  // 階段 1 — 把文字丟 Gemini 解析成「金額 + 分類 + 備註 + 帳戶」並寫入 Transaction
+  // 階段 1 — 把文字丟 Gemini 解析成「金額 + 分類 + 備註 + 付款方式」並寫入 Transaction
   await ensureDefaultAccounts(member.familyId);
-  const [categories, accounts] = await Promise.all([
+  const [categories, accounts, cards] = await Promise.all([
     prisma.category.findMany({
       where: { familyId: member.familyId },
       select: { name: true, type: true },
@@ -65,11 +67,17 @@ export async function handleTextMessage(
       select: { name: true },
       orderBy: { sortOrder: 'asc' },
     }),
+    prisma.creditCard.findMany({
+      where: { familyId: member.familyId, isArchived: false },
+      select: { name: true },
+      orderBy: { sortOrder: 'asc' },
+    }),
   ]);
+  const paymentNames = [...accounts.map((a) => a.name), ...cards.map((c) => c.name)];
 
   let parsed;
   try {
-    parsed = await parseTransactionText(text, categories, accounts.map((a) => a.name));
+    parsed = await parseTransactionText(text, categories, paymentNames);
   } catch (err) {
     logger.error({ err, userId }, 'parseTransactionText threw');
     parsed = null;
@@ -88,8 +96,24 @@ export async function handleTextMessage(
     return;
   }
 
-  // 整句共用付款方式（各細項 accountName 相同）
-  const accountId = await resolveAccountId(member.familyId, parsed[0]?.accountName ?? null);
+  // 整句共用付款方式：先比信用卡 → 再比帳戶 → 都對不上但有提到 = 未知（記預設並詢問新增）
+  const rawPay = parsed[0]?.accountName ?? null;
+  let accountId: string | null = null;
+  let creditCardId: string | null = null;
+  let unknownPay: string | null = null;
+
+  if (rawPay) {
+    creditCardId = await resolveCreditCardId(member.familyId, rawPay);
+    if (!creditCardId) {
+      accountId = await findAccountIdByName(member.familyId, rawPay);
+      if (!accountId) {
+        unknownPay = rawPay;
+        accountId = await resolveAccountId(member.familyId, null); // 先記到預設帳戶
+      }
+    }
+  } else {
+    accountId = await resolveAccountId(member.familyId, null);
+  }
 
   // 逐筆寫入每個細項
   const txs = [];
@@ -100,11 +124,17 @@ export async function handleTextMessage(
         memberId: member.id,
         parsed: item,
         accountId,
+        creditCardId,
       }),
     );
   }
 
-  const acctName = txs[0]?.account ? `${txs[0].account.icon ?? ''}${txs[0].account.name}` : null;
+  const payLabel = txs[0]?.creditCard
+    ? `${txs[0].creditCard.icon ?? '💳'}${txs[0].creditCard.name}`
+    : txs[0]?.account
+      ? `${txs[0].account.icon ?? ''}${txs[0].account.name}`
+      : null;
+  const acctName = payLabel;
   const hasExpense = parsed.some((p) => p.type === 'EXPENSE');
   const alert = hasExpense ? await getBudgetAlert(member.familyId) : null;
   const alertLine = alert ? `\n\n${alert}` : '';
@@ -130,6 +160,26 @@ export async function handleTextMessage(
     const totalAbs = Math.abs(total);
     const acctLine = acctName ? `　💳 ${acctName}` : '';
     body = `已記帳 ${txs.length} 筆 ✅\n${lines}\n合計 ${total < 0 ? '-' : ''}$${totalAbs.toLocaleString('en-US')}${acctLine}\n記錄者：${member.displayName}`;
+  }
+
+  // 未知付款方式 → 詢問是否新增為帳戶（信用卡需到記帳簿填額度/結算日/繳費日）
+  if (unknownPay) {
+    setPendingAccount(userId, {
+      familyId: member.familyId,
+      name: unknownPay,
+      txnIds: txs.map((t) => t.id),
+    });
+    await lineClient.replyMessage({
+      replyToken: event.replyToken,
+      messages: [
+        {
+          type: 'text',
+          text: `${body}${alertLine}\n\n💡 你提到的「${unknownPay}」還不是帳戶，要新增嗎？\n（信用卡請到記帳簿新增，需填額度/結算日/繳費日）`,
+          quickReply: buildAddAccountQuickReply(unknownPay),
+        },
+      ],
+    });
+    return;
   }
 
   await lineClient.replyMessage({

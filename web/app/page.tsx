@@ -5,6 +5,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { initLiff, getProfile } from '@/lib/liff';
 import { apiGet, apiPut, apiDownload } from '@/lib/api';
 import AccountsSection from '@/components/AccountsSection';
+import CreditCardsSection from '@/components/CreditCardsSection';
 
 type MeResp =
   | { joined: false }
@@ -241,6 +242,9 @@ export default function Home() {
 
       {/* 帳戶 / 付款方式（餘額不分月，獨立載入）*/}
       {userId && <AccountsSection userId={userId} />}
+
+      {/* 信用卡（額度/結算日/繳費日，獨立於帳戶）*/}
+      {userId && <CreditCardsSection userId={userId} />}
 
       {/* 分類圓餅圖 */}
       <section className="rounded-lg bg-white p-4 shadow-sm">

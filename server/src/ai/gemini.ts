@@ -38,7 +38,7 @@ export type ParsedBillItem = ParsedTransaction & { paidAt?: string };
 export async function parseTransactionText(
   text: string,
   categories: CategoryHint[],
-  accountNames: string[] = [],
+  paymentNames: string[] = [], // 現有帳戶 + 信用卡名稱，僅供正規化提示
 ): Promise<ParsedTransaction[] | null> {
   const categoryNames = categories.map((c) => c.name);
   const expenseNames = categories.filter((c) => c.type === 'EXPENSE').map((c) => c.name);
@@ -59,9 +59,9 @@ export async function parseTransactionText(
           accountName: {
             type: SchemaType.STRING,
             description:
-              accountNames.length > 0
-                ? `整句共用的付款帳戶/方式，只能從這些挑：${accountNames.join('、')}；沒提到就空字串`
-                : '留空字串',
+              paymentNames.length > 0
+                ? `整句共用的付款方式名稱原文（如「現金」「玉山」「台新卡」）。現有可參考：${paymentNames.join('、')}。沒提到就空字串`
+                : '付款方式名稱原文，沒提到就空字串',
           },
           items: {
             type: SchemaType.ARRAY,
@@ -94,9 +94,9 @@ export async function parseTransactionText(
     `- 支出分類只能從：${expenseNames.join('、')}`,
     `- 收入分類只能從：${incomeNames.join('、')}`,
     '- 找不到對應分類時，支出用「其他支出」、收入用「其他收入」。',
-    accountNames.length > 0
-      ? `- 若句子提到付款方式，對應帳戶清單：${accountNames.join('、')}；對不上或沒提到 accountName 空字串。`
-      : '- accountName 一律空字串。',
+    paymentNames.length > 0
+      ? `- 句子若提到付款方式，accountName 填它的名稱原文（去掉「刷」「用」等動詞，如「刷台新」→「台新」）；可參考現有：${paymentNames.join('、')}。沒提到就空字串。`
+      : '- 句子若提到付款方式就填名稱原文，沒提到 accountName 空字串。',
     '- 如果根本不是記帳（打招呼、問問題），isTransaction 設 false、items 空陣列。',
     '',
     `使用者輸入：「${text}」`,
@@ -112,7 +112,8 @@ export async function parseTransactionText(
 
     if (!parsed.isTransaction || !Array.isArray(parsed.items)) return null;
 
-    const accountName = parsed.accountName && accountNames.includes(parsed.accountName) ? parsed.accountName : null;
+    // 回傳原文付款名稱（可能對不上任何帳戶/卡，交給 handler 判斷是否詢問新增）
+    const accountName = (parsed.accountName ?? '').trim() || null;
 
     const items: ParsedTransaction[] = parsed.items
       .filter((it) => it.amount && it.amount > 0)

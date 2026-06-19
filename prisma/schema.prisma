@@ -26,6 +26,7 @@ model Family {
   budgets      Budget[]
   accounts     Account[]
   transfers    Transfer[]
+  creditCards  CreditCard[]
 
   @@index([ownerLineId])
 }
@@ -81,23 +82,26 @@ model Transaction {
   familyId   String
   memberId   String
   categoryId String
-  accountId  String? // 付款帳戶（現金/銀行/信用卡/電子支付）；null = 未指定（含舊資料）
+  accountId    String? // 付款帳戶（現金/銀行/電子支付）；null = 未指定（含舊資料）
+  creditCardId String? // 用信用卡付款時填此；與 accountId 二擇一
   amount     Decimal           @db.Decimal(12, 2)
   note       String?
   paidAt     DateTime
   source     TransactionSource @default(TEXT)
   createdAt  DateTime          @default(now())
 
-  family   Family       @relation(fields: [familyId], references: [id], onDelete: Cascade)
-  member   FamilyMember @relation(fields: [memberId], references: [id])
-  category Category     @relation(fields: [categoryId], references: [id])
-  account  Account?     @relation(fields: [accountId], references: [id])
-  receipt  Receipt?
+  family     Family       @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  member     FamilyMember @relation(fields: [memberId], references: [id])
+  category   Category     @relation(fields: [categoryId], references: [id])
+  account    Account?     @relation(fields: [accountId], references: [id])
+  creditCard CreditCard?  @relation(fields: [creditCardId], references: [id])
+  receipt    Receipt?
 
   @@index([familyId, paidAt])
   @@index([familyId, categoryId])
   @@index([memberId])
   @@index([accountId])
+  @@index([creditCardId])
 }
 
 enum TransactionSource {
@@ -149,6 +153,26 @@ enum AccountType {
   CREDIT_CARD  // 信用卡
   EPAYMENT     // 電子支付（LINE Pay / 街口…）
   OTHER
+}
+
+// ===== 信用卡（與帳戶分開：有額度/結算日/繳費日）=====
+model CreditCard {
+  id           String   @id @default(cuid())
+  familyId     String
+  name         String
+  creditLimit  Decimal  @db.Decimal(12, 2) @default(0) // 額度
+  statementDay Int      @default(1) // 結算日（每月幾號）
+  dueDay       Int      @default(15) // 繳費日（每月幾號）
+  icon         String?
+  isArchived   Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  family       Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@unique([familyId, name])
+  @@index([familyId])
 }
 
 // ===== 帳戶間轉帳（不計入收支，只移動餘額）=====

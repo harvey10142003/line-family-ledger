@@ -20,10 +20,13 @@ type Account = {
 const TYPE_META: Record<AccountType, { label: string; icon: string }> = {
   CASH: { label: '現金', icon: '💵' },
   BANK: { label: '銀行', icon: '🏦' },
-  CREDIT_CARD: { label: '信用卡', icon: '💳' },
+  CREDIT_CARD: { label: '信用卡', icon: '💳' }, // 舊資料顯示用；信用卡已獨立區塊
   EPAYMENT: { label: '電子支付', icon: '📱' },
   OTHER: { label: '其他', icon: '📦' },
 };
+
+// 新增/編輯帳戶可選的類型（信用卡已獨立，不在此）
+const SELECTABLE_TYPES: AccountType[] = ['CASH', 'BANK', 'EPAYMENT', 'OTHER'];
 
 function ntd(n: number): string {
   const s = `$${Math.abs(n).toLocaleString('en-US')}`;
@@ -174,7 +177,7 @@ export default function AccountsSection({ userId }: { userId: string }) {
           <p className="text-xs font-medium text-gray-600">{editing ? '編輯帳戶' : '新增帳戶'}</p>
           <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="帳戶名稱（如 台新銀行）" className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm" />
           <div className="flex flex-wrap gap-1.5">
-            {(Object.keys(TYPE_META) as AccountType[]).map((t) => (
+            {SELECTABLE_TYPES.map((t) => (
               <button key={t} onClick={() => setFType(t)} className={`rounded-full px-3 py-1 text-xs ${fType === t ? 'bg-indigo-500 text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
                 {TYPE_META[t].icon} {TYPE_META[t].label}
               </button>

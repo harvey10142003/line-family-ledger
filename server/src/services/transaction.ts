@@ -21,6 +21,7 @@ export async function recordTransaction(params: {
   source?: 'TEXT' | 'PHOTO' | 'MANUAL';
   paidAt?: Date;
   accountId?: string | null;
+  creditCardId?: string | null;
 }) {
   const { familyId, memberId, parsed } = params;
 
@@ -48,8 +49,9 @@ export async function recordTransaction(params: {
       paidAt: params.paidAt ?? new Date(),
       source: params.source ?? 'TEXT',
       accountId: params.accountId ?? null,
+      creditCardId: params.creditCardId ?? null,
     },
-    include: { category: true, member: true, account: true },
+    include: { category: true, member: true, account: true, creditCard: true },
   });
 
   return tx;
@@ -234,7 +236,7 @@ export async function getMonthlyTransactions(familyId: string, month: string) {
   const { start, end } = monthRange(month);
   const txs = await prisma.transaction.findMany({
     where: { familyId, paidAt: { gte: start, lt: end } },
-    include: { category: true, member: true, account: true },
+    include: { category: true, member: true, account: true, creditCard: true },
     orderBy: { paidAt: 'desc' },
   });
 
@@ -247,8 +249,10 @@ export async function getMonthlyTransactions(familyId: string, month: string) {
     note: t.note,
     memberName: t.member.displayName,
     accountId: t.accountId,
-    accountName: t.account?.name ?? null,
-    accountIcon: t.account?.icon ?? null,
+    creditCardId: t.creditCardId,
+    // 付款顯示：帳戶或信用卡
+    accountName: t.account?.name ?? t.creditCard?.name ?? null,
+    accountIcon: t.account?.icon ?? t.creditCard?.icon ?? (t.creditCardId ? '💳' : null),
     paidAt: t.paidAt.toISOString(),
     source: t.source,
   }));

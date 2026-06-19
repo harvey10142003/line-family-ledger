@@ -2,10 +2,10 @@ import { prisma } from '../prisma';
 import type { AccountType } from '@prisma/client';
 
 // 建立家庭時 / 首次使用帳戶功能時自動套用的預設帳戶
+// 信用卡已獨立為 CreditCard，預設帳戶不含信用卡
 export const DEFAULT_ACCOUNTS: { name: string; type: AccountType; icon: string; isDefault: boolean; sortOrder: number }[] = [
   { name: '現金', type: 'CASH', icon: '💵', isDefault: true, sortOrder: 1 },
   { name: '銀行', type: 'BANK', icon: '🏦', isDefault: false, sortOrder: 2 },
-  { name: '信用卡', type: 'CREDIT_CARD', icon: '💳', isDefault: false, sortOrder: 3 },
 ];
 
 // 確保家庭有預設帳戶（含舊家庭 lazy 補建）。回傳該家庭帳戶數。
@@ -93,6 +93,12 @@ export async function resolveAccountId(familyId: string, accountName?: string | 
     orderBy: [{ isDefault: 'desc' }, { sortOrder: 'asc' }],
   });
   return def?.id ?? null;
+}
+
+// 精準比對帳戶名稱（找不到回 null，不退預設）— 給「未知付款→詢問新增」判斷用
+export async function findAccountIdByName(familyId: string, name: string): Promise<string | null> {
+  const hit = await prisma.account.findFirst({ where: { familyId, name, isArchived: false } });
+  return hit?.id ?? null;
 }
 
 export async function createAccount(params: {

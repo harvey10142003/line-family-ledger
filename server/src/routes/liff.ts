@@ -9,6 +9,7 @@ import {
   createTransfer,
   resolveAccountId,
 } from '../services/account';
+import { getCreditCards, createCreditCard, updateCreditCard } from '../services/creditcard';
 import type { AccountType } from '@prisma/client';
 
 export const liffRouter = Router();
@@ -218,6 +219,63 @@ liffRouter.post('/transfers', async (req, res) => {
       note,
     });
     return res.json(tr);
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
+// 信用卡清單（含本期已用/可用額度/結算日/繳費日）
+liffRouter.get('/credit-cards', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const includeArchived = req.query.includeArchived === '1';
+  return res.json({ cards: await getCreditCards(member.familyId, includeArchived) });
+});
+
+// 新增信用卡（需額度/結算日/繳費日）
+liffRouter.post('/credit-cards', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const { name, creditLimit, statementDay, dueDay } = (req.body ?? {}) as {
+    name?: string;
+    creditLimit?: number;
+    statementDay?: number;
+    dueDay?: number;
+  };
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+  try {
+    const card = await createCreditCard({ familyId: member.familyId, name: name.trim(), creditLimit, statementDay, dueDay });
+    return res.json(card);
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
+// 編輯信用卡
+liffRouter.put('/credit-cards/:id', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  try {
+    const card = await updateCreditCard({
+      familyId: member.familyId,
+      cardId: req.params.id,
+      name: body.name as string | undefined,
+      creditLimit: body.creditLimit as number | undefined,
+      statementDay: body.statementDay as number | undefined,
+      dueDay: body.dueDay as number | undefined,
+      isArchived: body.isArchived as boolean | undefined,
+    });
+    return res.json(card);
   } catch (err) {
     return res.status(400).json({ error: String(err) });
   }
