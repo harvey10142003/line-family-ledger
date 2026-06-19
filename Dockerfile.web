@@ -1,0 +1,32 @@
+# Web (Next.js LIFF 記帳簿) Dockerfile — Zeabur 部署 web
+FROM node:20-slim AS base
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+FROM base AS deps
+WORKDIR /app
+ENV NODE_ENV=development
+COPY package.json package-lock.json* ./
+COPY server/package.json server/
+COPY web/package.json web/
+COPY prisma ./prisma
+RUN npm install --workspaces --include-workspace-root --include=dev
+
+FROM base AS build
+WORKDIR /app
+ENV NODE_ENV=production
+# NEXT_PUBLIC_* 必須 build 時嵌入（service env 不會進 build），預設值寫死可用
+ARG NEXT_PUBLIC_LIFF_ID=2010007178-xszHrky3
+ENV NEXT_PUBLIC_LIFF_ID=$NEXT_PUBLIC_LIFF_ID
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm --workspace web run build
+
+FROM base AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=8080
+# standalone 輸出（monorepo：standalone 根含 node_modules + web/server.js）
+COPY --from=build /app/web/.next/standalone ./
+COPY --from=build /app/web/.next/static ./web/.next/static
+EXPOSE 8080
+CMD ["node", "web/server.js"]
