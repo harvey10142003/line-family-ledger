@@ -3,7 +3,7 @@ import { lineClient, lineBlobClient } from '../client';
 import { findMemberByLineId } from '../../services/family';
 import { prisma } from '../../prisma';
 import { parseReceiptImage } from '../../ai/gemini';
-import { recordTransaction } from '../../services/transaction';
+import { recordTransaction, recordTransactionsBatch } from '../../services/transaction';
 import { getBudgetAlert } from '../../services/budget';
 import { resolveAccountId } from '../../services/account';
 import { logger } from '../../logger';
@@ -66,16 +66,54 @@ export async function handleImageMessage(
     return;
   }
 
-  const note = receipt.merchant || receipt.items[0]?.name || '收據';
   const paidAt = receipt.paidAt ? new Date(`${receipt.paidAt}T12:00:00+08:00`) : undefined;
-
   const accountId = await resolveAccountId(member.familyId, null);
+  const merchant = receipt.merchant ? `（${receipt.merchant}）` : '';
+  const dateLine = receipt.paidAt ? `\n📅 ${receipt.paidAt}` : '';
+  const alert = await getBudgetAlert(member.familyId);
+  const alertLine = alert ? `\n\n${alert}` : '';
+
+  // 有細項（≥2 筆）→ 逐項記帳；否則記總額一筆
+  if (receipt.items.length >= 2) {
+    const { count, total } = await recordTransactionsBatch({
+      familyId: member.familyId,
+      memberId: member.id,
+      source: 'PHOTO',
+      accountId,
+      items: receipt.items.map((it) => ({
+        amount: it.amount,
+        categoryName: it.categoryName ?? receipt.suggestedCategory ?? '其他支出',
+        note: it.name || receipt.merchant || '收據品項',
+        type: 'EXPENSE',
+        paidAt: receipt.paidAt,
+      })),
+    });
+
+    const lines = receipt.items
+      .slice(0, 12)
+      .map((it) => `・${it.name || it.categoryName} $${Number(it.amount).toLocaleString('en-US')}`)
+      .join('\n');
+    const more = receipt.items.length > 12 ? `\n…等 ${receipt.items.length} 項` : '';
+    const totalNote = Math.abs(total - receipt.totalAmount) > 0.5 ? `\n（收據合計 $${receipt.totalAmount.toLocaleString('en-US')}，細項加總 $${total.toLocaleString('en-US')}，差額多為稅/折扣）` : '';
+    await lineClient.replyMessage({
+      replyToken: event.replyToken,
+      messages: [
+        {
+          type: 'text',
+          text: `已從收據逐項記帳 📸✅ 共 ${count} 筆${merchant}${dateLine}\n${lines}${more}${totalNote}\n記錄者：${member.displayName}${alertLine}\n\n金額有誤可在記帳簿裡調整。`,
+        },
+      ],
+    });
+    return;
+  }
+
+  const note = receipt.merchant || receipt.items[0]?.name || '收據';
   const tx = await recordTransaction({
     familyId: member.familyId,
     memberId: member.id,
     parsed: {
       amount: receipt.totalAmount,
-      categoryName: receipt.suggestedCategory ?? '其他支出',
+      categoryName: receipt.items[0]?.categoryName ?? receipt.suggestedCategory ?? '其他支出',
       note,
       type: 'EXPENSE',
     },
@@ -84,9 +122,6 @@ export async function handleImageMessage(
     accountId,
   });
 
-  const dateLine = receipt.paidAt ? `\n📅 ${receipt.paidAt}` : '';
-  const alert = await getBudgetAlert(member.familyId);
-  const alertLine = alert ? `\n\n${alert}` : '';
   await lineClient.replyMessage({
     replyToken: event.replyToken,
     messages: [

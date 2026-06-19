@@ -23,7 +23,7 @@ export type ParsedReceipt = {
   totalAmount: number;
   merchant?: string;
   paidAt?: string;
-  items: { name: string; amount: number }[];
+  items: { name: string; amount: number; categoryName?: string }[];
   suggestedCategory?: string;
 };
 
@@ -32,13 +32,14 @@ export type CategoryHint = { name: string; type: 'EXPENSE' | 'INCOME' };
 // PDF 帳單的單筆交易（比文字記帳多一個日期）
 export type ParsedBillItem = ParsedTransaction & { paidAt?: string };
 
-// 階段 1：文字記帳 parse。把「午餐 120」「薪水 50000」「7-11 飲料 45 其他支出」
-// 解析成結構化交易。categoryName 必須命中傳入的家庭分類之一；無法判斷金額時回 null。
+// 階段 1：文字記帳 parse。支援「多細項」一次輸入 → 回多筆。
+// 「午餐 120」→ 1 筆；「早餐 豆漿25 蛋餅35」→ 2 筆；付款方式為整句共用。
+// 無法判斷出任何金額時回 null。
 export async function parseTransactionText(
   text: string,
   categories: CategoryHint[],
   accountNames: string[] = [],
-): Promise<ParsedTransaction | null> {
+): Promise<ParsedTransaction[] | null> {
   const categoryNames = categories.map((c) => c.name);
   const expenseNames = categories.filter((c) => c.type === 'EXPENSE').map((c) => c.name);
   const incomeNames = categories.filter((c) => c.type === 'INCOME').map((c) => c.name);
@@ -53,89 +54,82 @@ export async function parseTransactionText(
         properties: {
           isTransaction: {
             type: SchemaType.BOOLEAN,
-            description: '這句話是否為一筆記帳（含金額的收入或支出）',
-          },
-          amount: {
-            type: SchemaType.NUMBER,
-            description: '金額，正數。無法判斷時填 0',
-          },
-          type: {
-            type: SchemaType.STRING,
-            format: 'enum',
-            enum: ['EXPENSE', 'INCOME'],
-            description: '支出或收入',
-          },
-          categoryName: {
-            type: SchemaType.STRING,
-            format: 'enum',
-            enum: categoryNames,
-            description: '從提供的分類清單挑一個最貼切的',
-          },
-          note: {
-            type: SchemaType.STRING,
-            description: '備註，通常是品項或描述，例如「午餐」「7-11 飲料」。沒有就空字串',
+            description: '這句話是否為記帳（含金額的收入或支出）',
           },
           accountName: {
             type: SchemaType.STRING,
             description:
               accountNames.length > 0
-                ? `付款帳戶/方式，只能從這些挑：${accountNames.join('、')}；句子沒提到付款方式就回空字串`
+                ? `整句共用的付款帳戶/方式，只能從這些挑：${accountNames.join('、')}；沒提到就空字串`
                 : '留空字串',
           },
+          items: {
+            type: SchemaType.ARRAY,
+            description: '每一個有獨立金額的細項各一筆；只有一個金額就只回一筆',
+            items: {
+              type: SchemaType.OBJECT,
+              properties: {
+                amount: { type: SchemaType.NUMBER, description: '金額正數' },
+                type: { type: SchemaType.STRING, format: 'enum', enum: ['EXPENSE', 'INCOME'] },
+                categoryName: { type: SchemaType.STRING, format: 'enum', enum: categoryNames },
+                note: { type: SchemaType.STRING, description: '品項描述（去掉金額），如「豆漿」「蛋餅」' },
+              },
+              required: ['amount', 'type', 'categoryName', 'note'],
+            },
+          },
         },
-        required: ['isTransaction', 'amount', 'type', 'categoryName', 'note', 'accountName'],
+        required: ['isTransaction', 'accountName', 'items'],
       },
     },
   });
 
   const prompt = [
-    '你是家庭記帳助理。使用者用一句話記一筆帳，請解析成結構化資料。',
+    '你是家庭記帳助理。使用者用文字記帳，可能一次寫好幾個有各自金額的細項，請逐項拆開。',
     '',
     '規則：',
-    '- 金額是句子中的數字，可能有「元」「塊」「$」等，取純數值。',
-    '- 預設為支出 (EXPENSE)。只有明顯是收入（薪水、獎金、收到錢、賣東西收入）才用 INCOME。',
+    '- 每個「有獨立金額的品項」各拆成 items 的一筆，例如「早餐 豆漿25 蛋餅35」→ 豆漿25、蛋餅35 兩筆。',
+    '- 只有一個總金額時（如「午餐 120」「晚餐聚餐 1200」）就只回一筆，不要自己拆。',
+    '- 金額可能有「元」「塊」「$」，取純數值。付款方式（現金/刷卡/LINE Pay）不是品項，不要當成 item。',
+    '- 預設支出 (EXPENSE)，明顯是收入（薪水、獎金、收到錢）才 INCOME。',
     `- 支出分類只能從：${expenseNames.join('、')}`,
     `- 收入分類只能從：${incomeNames.join('、')}`,
-    '- 找不到完全對應的分類時，支出用「其他支出」、收入用「其他收入」。',
-    '- note 放品項描述（去掉金額數字），例如「午餐 120」的 note 是「午餐」。',
+    '- 找不到對應分類時，支出用「其他支出」、收入用「其他收入」。',
     accountNames.length > 0
-      ? `- 若句子提到付款方式（如「現金」「刷卡」「刷台新」「LINE Pay」），對應到帳戶清單：${accountNames.join('、')}；對不上或沒提到就 accountName 空字串。`
+      ? `- 若句子提到付款方式，對應帳戶清單：${accountNames.join('、')}；對不上或沒提到 accountName 空字串。`
       : '- accountName 一律空字串。',
-    '- 如果這句話根本不是記帳（例如打招呼、問問題），isTransaction 設 false。',
+    '- 如果根本不是記帳（打招呼、問問題），isTransaction 設 false、items 空陣列。',
     '',
     `使用者輸入：「${text}」`,
   ].join('\n');
 
   try {
     const result = await model.generateContent(prompt);
-    const raw = result.response.text();
-    const parsed = JSON.parse(raw) as {
+    const parsed = JSON.parse(result.response.text()) as {
       isTransaction: boolean;
-      amount: number;
-      type: 'EXPENSE' | 'INCOME';
-      categoryName: string;
-      note: string;
       accountName?: string;
+      items: { amount: number; type: 'EXPENSE' | 'INCOME'; categoryName: string; note: string }[];
     };
 
-    if (!parsed.isTransaction || !parsed.amount || parsed.amount <= 0) return null;
+    if (!parsed.isTransaction || !Array.isArray(parsed.items)) return null;
 
-    // 防呆：categoryName 萬一不在清單內，退回「其他」
-    let categoryName = parsed.categoryName;
-    if (!categoryNames.includes(categoryName)) {
-      categoryName = parsed.type === 'INCOME' ? '其他收入' : '其他支出';
-    }
-
-    // 帳戶提示：對不上家庭帳戶就 null（交給 service 用預設帳戶）
     const accountName = parsed.accountName && accountNames.includes(parsed.accountName) ? parsed.accountName : null;
 
-    return {
-      amount: Math.round(parsed.amount * 100) / 100,
-      categoryName,
-      note: (parsed.note ?? '').trim(),
-      type: parsed.type === 'INCOME' ? 'INCOME' : 'EXPENSE',
-      accountName,
-    };
+    const items: ParsedTransaction[] = parsed.items
+      .filter((it) => it.amount && it.amount > 0)
+      .map((it) => {
+        const type = it.type === 'INCOME' ? 'INCOME' : 'EXPENSE';
+        let categoryName = it.categoryName;
+        if (!categoryNames.includes(categoryName)) categoryName = type === 'INCOME' ? '其他收入' : '其他支出';
+        return {
+          amount: Math.round(it.amount * 100) / 100,
+          categoryName,
+          note: (it.note ?? '').trim(),
+          type,
+          accountName,
+        };
+      });
+
+    return items.length > 0 ? items : null;
   } catch (err) {
     logger.error({ err, text }, 'parseTransactionText failed');
     return null;
@@ -179,14 +173,15 @@ export async function parseReceiptImage(
           },
           items: {
             type: SchemaType.ARRAY,
-            description: '品項明細（最多 10 筆），看不出明細可空陣列',
+            description: '品項明細（最多 20 筆），看不出明細可空陣列',
             items: {
               type: SchemaType.OBJECT,
               properties: {
                 name: { type: SchemaType.STRING },
                 amount: { type: SchemaType.NUMBER },
+                categoryName: { type: SchemaType.STRING, format: 'enum', enum: expenseNames, description: '該品項的支出分類' },
               },
-              required: ['name', 'amount'],
+              required: ['name', 'amount', 'categoryName'],
             },
           },
         },
@@ -199,6 +194,7 @@ export async function parseReceiptImage(
     '你是家庭記帳助理。請辨識這張收據／發票／帳單的內容。',
     `- 支出分類只能從：${expenseNames.join('、')}；找不到對應就用「其他支出」。`,
     '- totalAmount 取「應付總額／合計」，不是單一品項金額。',
+    '- items 盡量逐項列出每個有金額的品項（含各自分類），讓使用者可逐筆記帳。',
     '- 如果圖片根本不是收據（例如風景照、人像），isReceipt 設 false。',
   ].join('\n');
 
@@ -213,7 +209,7 @@ export async function parseReceiptImage(
       merchant: string;
       paidAt: string;
       suggestedCategory: string;
-      items: { name: string; amount: number }[];
+      items: { name: string; amount: number; categoryName?: string }[];
     };
 
     if (!parsed.isReceipt || !parsed.totalAmount || parsed.totalAmount <= 0) return null;
@@ -221,11 +217,20 @@ export async function parseReceiptImage(
     let suggestedCategory = parsed.suggestedCategory;
     if (!expenseNames.includes(suggestedCategory)) suggestedCategory = '其他支出';
 
+    const items = (Array.isArray(parsed.items) ? parsed.items : [])
+      .filter((it) => it.amount && it.amount > 0)
+      .slice(0, 20)
+      .map((it) => ({
+        name: (it.name ?? '').trim(),
+        amount: Math.round(it.amount * 100) / 100,
+        categoryName: it.categoryName && expenseNames.includes(it.categoryName) ? it.categoryName : suggestedCategory,
+      }));
+
     return {
       totalAmount: Math.round(parsed.totalAmount * 100) / 100,
       merchant: parsed.merchant?.trim() || undefined,
       paidAt: /^\d{4}-\d{2}-\d{2}$/.test(parsed.paidAt) ? parsed.paidAt : undefined,
-      items: Array.isArray(parsed.items) ? parsed.items.slice(0, 10) : [],
+      items,
       suggestedCategory,
     };
   } catch (err) {

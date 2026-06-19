@@ -88,30 +88,52 @@ export async function handleTextMessage(
     return;
   }
 
-  const accountId = await resolveAccountId(member.familyId, parsed.accountName);
-  const tx = await recordTransaction({
-    familyId: member.familyId,
-    memberId: member.id,
-    parsed,
-    accountId,
-  });
+  // 整句共用付款方式（各細項 accountName 相同）
+  const accountId = await resolveAccountId(member.familyId, parsed[0]?.accountName ?? null);
 
-  const icon = tx.category.icon ?? (parsed.type === 'INCOME' ? '💰' : '💸');
-  const sign = parsed.type === 'INCOME' ? '+' : '';
-  const noteLine = tx.note ? `\n📝 ${tx.note}` : '';
-  const acctLine = tx.account ? `\n💳 ${tx.account.icon ?? ''}${tx.account.name}` : '';
+  // 逐筆寫入每個細項
+  const txs = [];
+  for (const item of parsed) {
+    txs.push(
+      await recordTransaction({
+        familyId: member.familyId,
+        memberId: member.id,
+        parsed: item,
+        accountId,
+      }),
+    );
+  }
 
-  // 支出才檢查預算提醒
-  const alert = parsed.type === 'EXPENSE' ? await getBudgetAlert(member.familyId) : null;
+  const acctName = txs[0]?.account ? `${txs[0].account.icon ?? ''}${txs[0].account.name}` : null;
+  const hasExpense = parsed.some((p) => p.type === 'EXPENSE');
+  const alert = hasExpense ? await getBudgetAlert(member.familyId) : null;
   const alertLine = alert ? `\n\n${alert}` : '';
+
+  let body: string;
+  if (txs.length === 1) {
+    const tx = txs[0];
+    const icon = tx.category.icon ?? (tx.category.type === 'INCOME' ? '💰' : '💸');
+    const sign = tx.category.type === 'INCOME' ? '+' : '';
+    const noteLine = tx.note ? `\n📝 ${tx.note}` : '';
+    const acctLine = acctName ? `\n💳 ${acctName}` : '';
+    body = `已記帳 ✅\n${icon} ${tx.category.name}　${sign}$${Number(tx.amount).toLocaleString('en-US')}${noteLine}${acctLine}\n記錄者：${member.displayName}`;
+  } else {
+    // 多細項：逐筆列出 + 合計
+    const lines = txs
+      .map((tx) => {
+        const icon = tx.category.icon ?? (tx.category.type === 'INCOME' ? '💰' : '💸');
+        const sign = tx.category.type === 'INCOME' ? '+' : '';
+        return `${icon} ${tx.note || tx.category.name}　${sign}$${Number(tx.amount).toLocaleString('en-US')}`;
+      })
+      .join('\n');
+    const total = txs.reduce((s, tx) => s + (tx.category.type === 'INCOME' ? 1 : -1) * Number(tx.amount), 0);
+    const totalAbs = Math.abs(total);
+    const acctLine = acctName ? `　💳 ${acctName}` : '';
+    body = `已記帳 ${txs.length} 筆 ✅\n${lines}\n合計 ${total < 0 ? '-' : ''}$${totalAbs.toLocaleString('en-US')}${acctLine}\n記錄者：${member.displayName}`;
+  }
 
   await lineClient.replyMessage({
     replyToken: event.replyToken,
-    messages: [
-      {
-        type: 'text',
-        text: `已記帳 ✅\n${icon} ${tx.category.name}　${sign}$${Number(tx.amount).toLocaleString('en-US')}${noteLine}${acctLine}\n記錄者：${member.displayName}${alertLine}`,
-      },
-    ],
+    messages: [{ type: 'text', text: `${body}${alertLine}` }],
   });
 }
