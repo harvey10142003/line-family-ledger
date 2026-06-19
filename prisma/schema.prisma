@@ -23,6 +23,7 @@ model Family {
   categories   Category[]
   transactions Transaction[]
   invites      InviteLink[]
+  budgets      Budget[]
 
   @@index([ownerLineId])
 }
@@ -61,6 +62,7 @@ model Category {
 
   family       Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  budgets      Budget[]
 
   @@unique([familyId, name])
 }
@@ -96,6 +98,21 @@ enum TransactionSource {
   TEXT   // LINE 文字訊息輸入
   PHOTO  // 收據拍照辨識
   MANUAL // LIFF 表單手動輸入
+}
+
+// ===== 預算（每月循環）=====
+model Budget {
+  id         String   @id @default(cuid())
+  familyId   String
+  categoryId String? // null = 整體月預算；有值 = 該分類月預算
+  amount     Decimal  @db.Decimal(12, 2)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  family   Family    @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
 }
 
 // ===== 收據圖片 =====

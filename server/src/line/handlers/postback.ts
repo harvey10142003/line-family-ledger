@@ -2,6 +2,7 @@ import type { PostbackEvent } from '@line/bot-sdk';
 import { lineClient } from '../client';
 import { createFamily, joinFamily, findMemberByLineId } from '../../services/family';
 import { buildInviteUrl } from './follow';
+import { confirmPendingBill, cancelPendingBill } from './message-file';
 import { logger } from '../../logger';
 
 // 暫存使用者狀態：等待輸入家庭名稱 / 家庭碼
@@ -39,6 +40,14 @@ export async function handlePostback(event: PostbackEvent): Promise<void> {
         replyToken: event.replyToken,
         messages: [{ type: 'text', text: '請輸入 6 碼家庭碼' }],
       });
+      return;
+
+    case 'confirm_bill':
+      await confirmPendingBill(userId, event.replyToken);
+      return;
+
+    case 'cancel_bill':
+      await cancelPendingBill(userId, event.replyToken);
       return;
 
     default:

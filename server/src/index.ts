@@ -3,6 +3,8 @@ import { config } from './config';
 import { logger } from './logger';
 import { webhookRouter } from './routes/webhook';
 import { liffRouter } from './routes/liff';
+import { jobsRouter } from './routes/jobs';
+import { startSchedulers } from './jobs/scheduler';
 
 const app = express();
 
@@ -16,7 +18,9 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api/liff', liffRouter);
+app.use('/jobs', jobsRouter);
 
 app.listen(config.port, () => {
   logger.info(`server listening on :${config.port} (${config.nodeEnv})`);
+  startSchedulers();
 });

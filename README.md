@@ -103,8 +103,9 @@ line-family-ledger/
 - [x] LINE webhook + 家庭碼建立 / 加入流程
 - [x] LIFF 首頁骨架（顯示家庭資訊）
 - [x] LINE Messaging API 對接（webhook 簽章驗證、follow / postback / message dispatch）
-- [ ] **階段 1**：Gemini 文字 parse → Transaction 寫入 + 自動分類
-- [ ] **階段 2a**：Gemini 收據 OCR（image message）
-- [ ] **階段 2b**：Gemini PDF 帳單批次匯入（file message，信用卡 / 水電瓦斯）
-- [ ] **階段 2c**：LIFF 明細列表 + 月報表圓餅圖 + 成員占比
-- [ ] **階段 3**：預算 / 提醒 / 分帳結算 / Excel 匯出
+- [x] **階段 1**：Gemini 文字 parse → Transaction 寫入 + 自動分類
+- [x] **階段 2a**：Gemini 收據 OCR（image message）
+- [x] **階段 2b**：Gemini PDF 帳單批次匯入（file message，信用卡 / 水電瓦斯）
+- [x] **階段 2c**：LIFF 明細列表 + 月報表圓餅圖 + 成員占比
+- [x] **階段 3a**：每月預算（整體 + 超支提醒）/ 分帳結算（均分）/ CSV 匯出
+- [x] **階段 3b**：定期提醒（node-cron：月結 1 號 09:00 / 預算週報 週一 09:00，台北時區；可用 /jobs/* 外部觸發）

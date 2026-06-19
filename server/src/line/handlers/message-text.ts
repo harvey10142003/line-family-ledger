@@ -3,6 +3,11 @@ import { lineClient } from '../client';
 import { findMemberByLineId } from '../../services/family';
 import { handlePendingInput } from './postback';
 import { sendOnboardingMenu } from './follow';
+import { prisma } from '../../prisma';
+import { parseTransactionText } from '../../ai/gemini';
+import { recordTransaction } from '../../services/transaction';
+import { getBudgetAlert } from '../../services/budget';
+import { logger } from '../../logger';
 
 // 用戶可能用這些字眼叫出選單
 const MENU_TRIGGERS = new Set([
@@ -46,13 +51,54 @@ export async function handleTextMessage(
     return;
   }
 
-  // TODO: 階段 1 — 把文字丟 Gemini 解析成「金額 + 分類 + 備註」並寫入 Transaction
+  // 階段 1 — 把文字丟 Gemini 解析成「金額 + 分類 + 備註」並寫入 Transaction
+  const categories = await prisma.category.findMany({
+    where: { familyId: member.familyId },
+    select: { name: true, type: true },
+    orderBy: { sortOrder: 'asc' },
+  });
+
+  let parsed;
+  try {
+    parsed = await parseTransactionText(text, categories);
+  } catch (err) {
+    logger.error({ err, userId }, 'parseTransactionText threw');
+    parsed = null;
+  }
+
+  if (!parsed) {
+    await lineClient.replyMessage({
+      replyToken: event.replyToken,
+      messages: [
+        {
+          type: 'text',
+          text: '我看不出這是一筆記帳 🤔\n試試這樣輸入：\n  午餐 120\n  星巴克 150\n  薪水 50000\n\n打「選單」可看更多說明。',
+        },
+      ],
+    });
+    return;
+  }
+
+  const tx = await recordTransaction({
+    familyId: member.familyId,
+    memberId: member.id,
+    parsed,
+  });
+
+  const icon = tx.category.icon ?? (parsed.type === 'INCOME' ? '💰' : '💸');
+  const sign = parsed.type === 'INCOME' ? '+' : '';
+  const noteLine = tx.note ? `\n📝 ${tx.note}` : '';
+
+  // 支出才檢查預算提醒
+  const alert = parsed.type === 'EXPENSE' ? await getBudgetAlert(member.familyId) : null;
+  const alertLine = alert ? `\n\n${alert}` : '';
+
   await lineClient.replyMessage({
     replyToken: event.replyToken,
     messages: [
       {
         type: 'text',
-        text: `[骨架佔位] 收到「${text}」\n家庭：${member.family.name}\n之後會接 Gemini 解析並自動分類記帳`,
+        text: `已記帳 ✅\n${icon} ${tx.category.name}　${sign}$${Number(tx.amount).toLocaleString('en-US')}${noteLine}\n記錄者：${member.displayName}${alertLine}`,
       },
     ],
   });
