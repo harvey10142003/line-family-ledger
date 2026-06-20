@@ -10,6 +10,7 @@ import { config } from '../config';
 import { logger } from '../logger';
 import { getMonthlySummary } from '../services/transaction';
 import { getBudgets } from '../services/budget';
+import { getCreditCards } from '../services/creditcard';
 
 function ntd(n: number): string {
   return `$${n.toLocaleString('en-US')}`;
@@ -75,6 +76,36 @@ export async function sendMonthlySummaries(month?: string): Promise<{ families: 
   }
 
   logger.info({ target, families: families.length, pushed }, 'monthly summaries sent');
+  return { families: families.length, pushed };
+}
+
+// 信用卡繳費提醒：每天跑，繳費日前 daysBefore 天（預設 3）推播。
+export async function sendCreditCardDueReminders(daysBefore = 3): Promise<{ families: number; pushed: number }> {
+  const families = await prisma.family.findMany({ include: { members: true } });
+  // 今天台北 00:00
+  const t = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const todayStr = `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`;
+  const today = new Date(`${todayStr}T00:00:00+08:00`);
+
+  let pushed = 0;
+  for (const fam of families) {
+    const cards = await getCreditCards(fam.id);
+    const due = cards.filter((c) => {
+      const d = new Date(`${c.nextDueDate}T00:00:00+08:00`);
+      const days = Math.round((d.getTime() - today.getTime()) / 86400000);
+      return days === daysBefore;
+    });
+    if (due.length === 0) continue;
+
+    const lines = due
+      .map((c) => `${c.icon ?? '💳'} ${c.name}　本期應繳約 ${ntd(c.cycleUsed)}（${c.nextDueDate.slice(5)} 繳款）`)
+      .join('\n');
+    const text = `🔔 信用卡繳費提醒（${daysBefore} 天後到期）\n\n${lines}\n\n記得繳款別忘了～`;
+    await pushToFamily(fam.members.map((m) => m.lineUserId), text);
+    pushed++;
+  }
+
+  logger.info({ daysBefore, families: families.length, pushed }, 'credit card due reminders sent');
   return { families: families.length, pushed };
 }
 

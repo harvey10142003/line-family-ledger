@@ -20,6 +20,15 @@ export async function apiPatch<T>(path: string, lineUserId: string, body: unknow
   return apiSend<T>('PATCH', path, lineUserId, body);
 }
 
+export async function apiDelete<T>(path: string, lineUserId: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'DELETE',
+    headers: { 'x-line-user-id': lineUserId },
+  });
+  if (!res.ok) throw new Error(`API ${path} failed: ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
 async function apiSend<T>(method: string, path: string, lineUserId: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method,

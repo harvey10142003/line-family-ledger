@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { logger } from '../logger';
-import { sendMonthlySummaries, sendWeeklyBudgetDigests } from './reminders';
+import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders } from './reminders';
 
 const TZ = 'Asia/Taipei';
 
@@ -30,5 +30,14 @@ export function startSchedulers(): void {
     { timezone: TZ },
   );
 
-  logger.info('reminder schedulers started (Asia/Taipei): monthly 1st 09:00, weekly Mon 09:00');
+  // 每天 10:00（台北）信用卡繳費前 3 天提醒
+  cron.schedule(
+    '0 10 * * *',
+    () => {
+      sendCreditCardDueReminders(3).catch((err) => logger.error({ err }, 'credit card due job failed'));
+    },
+    { timezone: TZ },
+  );
+
+  logger.info('reminder schedulers started (Asia/Taipei): monthly 1st 09:00, weekly Mon 09:00, card due daily 10:00');
 }

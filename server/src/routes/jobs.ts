@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendMonthlySummaries, sendWeeklyBudgetDigests } from '../jobs/reminders';
+import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders } from '../jobs/reminders';
 import { logger } from '../logger';
 
 export const jobsRouter = Router();
@@ -19,6 +19,10 @@ jobsRouter.post('/:task', async (req, res) => {
     }
     if (task === 'weekly') {
       return res.json({ task, ...(await sendWeeklyBudgetDigests()) });
+    }
+    if (task === 'card-due') {
+      const days = typeof req.query.days === 'string' ? Number(req.query.days) : 3;
+      return res.json({ task, ...(await sendCreditCardDueReminders(Number.isFinite(days) ? days : 3)) });
     }
     return res.status(404).json({ error: `unknown task: ${task}` });
   } catch (err) {

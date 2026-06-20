@@ -304,6 +304,132 @@ liffRouter.patch('/transactions/:id/account', async (req, res) => {
   return res.json({ id: updated.id, accountId: updated.accountId });
 });
 
+// 分類清單（給新增/編輯交易的分類選單）
+liffRouter.get('/categories', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const cats = await prisma.category.findMany({
+    where: { familyId: member.familyId },
+    orderBy: [{ type: 'asc' }, { sortOrder: 'asc' }],
+    select: { id: true, name: true, icon: true, type: true },
+  });
+  return res.json({ categories: cats });
+});
+
+// YYYY-MM-DD → 台北中午 Date；非法回 undefined
+function parsePaidAt(raw: unknown): Date | undefined {
+  if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T12:00:00+08:00`);
+  return undefined;
+}
+
+// 手動新增一筆交易（記帳簿表單）
+liffRouter.post('/transactions', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const b = (req.body ?? {}) as {
+    categoryId?: string;
+    amount?: number;
+    note?: string | null;
+    paidAt?: string;
+    accountId?: string | null;
+    creditCardId?: string | null;
+  };
+  if (!b.categoryId || typeof b.amount !== 'number' || !(b.amount > 0)) {
+    return res.status(400).json({ error: 'categoryId and positive amount required' });
+  }
+  const cat = await prisma.category.findFirst({ where: { id: b.categoryId, familyId: member.familyId } });
+  if (!cat) return res.status(400).json({ error: 'invalid categoryId' });
+  if (b.accountId) {
+    const a = await prisma.account.findFirst({ where: { id: b.accountId, familyId: member.familyId } });
+    if (!a) return res.status(400).json({ error: 'invalid accountId' });
+  }
+  if (b.creditCardId) {
+    const c = await prisma.creditCard.findFirst({ where: { id: b.creditCardId, familyId: member.familyId } });
+    if (!c) return res.status(400).json({ error: 'invalid creditCardId' });
+  }
+
+  const tx = await prisma.transaction.create({
+    data: {
+      familyId: member.familyId,
+      memberId: member.id,
+      categoryId: b.categoryId,
+      amount: Math.round(b.amount * 100) / 100,
+      note: b.note?.trim() || null,
+      paidAt: parsePaidAt(b.paidAt) ?? new Date(),
+      source: 'MANUAL',
+      accountId: b.creditCardId ? null : b.accountId ?? null,
+      creditCardId: b.creditCardId ?? null,
+    },
+  });
+  return res.json({ id: tx.id });
+});
+
+// 編輯一筆交易
+liffRouter.patch('/transactions/:id', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const tx = await prisma.transaction.findFirst({ where: { id: req.params.id, familyId: member.familyId } });
+  if (!tx) return res.status(404).json({ error: 'transaction not found' });
+
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const data: Record<string, unknown> = {};
+  if (typeof b.categoryId === 'string') {
+    const cat = await prisma.category.findFirst({ where: { id: b.categoryId, familyId: member.familyId } });
+    if (!cat) return res.status(400).json({ error: 'invalid categoryId' });
+    data.categoryId = b.categoryId;
+  }
+  if (typeof b.amount === 'number' && b.amount > 0) data.amount = Math.round(b.amount * 100) / 100;
+  if (b.note !== undefined) data.note = (b.note as string)?.trim() || null;
+  const pa = parsePaidAt(b.paidAt);
+  if (pa) data.paidAt = pa;
+  // 付款方式：accountId 與 creditCardId 二擇一（給其一就清掉另一）
+  if (b.creditCardId !== undefined) {
+    if (b.creditCardId) {
+      const c = await prisma.creditCard.findFirst({ where: { id: b.creditCardId as string, familyId: member.familyId } });
+      if (!c) return res.status(400).json({ error: 'invalid creditCardId' });
+      data.creditCardId = b.creditCardId;
+      data.accountId = null;
+    } else {
+      data.creditCardId = null;
+    }
+  }
+  if (b.accountId !== undefined) {
+    if (b.accountId) {
+      const a = await prisma.account.findFirst({ where: { id: b.accountId as string, familyId: member.familyId } });
+      if (!a) return res.status(400).json({ error: 'invalid accountId' });
+      data.accountId = b.accountId;
+      data.creditCardId = null;
+    } else if (data.creditCardId === undefined) {
+      data.accountId = null;
+    }
+  }
+
+  await prisma.transaction.update({ where: { id: req.params.id }, data });
+  return res.json({ ok: true });
+});
+
+// 刪除一筆交易
+liffRouter.delete('/transactions/:id', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+
+  const tx = await prisma.transaction.findFirst({ where: { id: req.params.id, familyId: member.familyId } });
+  if (!tx) return res.status(404).json({ error: 'transaction not found' });
+  await prisma.transaction.delete({ where: { id: req.params.id } });
+  return res.json({ ok: true });
+});
+
 // CSV 匯出（Excel 可開，加 UTF-8 BOM 避免中文亂碼）
 liffRouter.get('/export', async (req, res) => {
   const lineUserId = req.header('x-line-user-id');
