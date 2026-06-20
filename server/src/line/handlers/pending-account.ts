@@ -2,6 +2,7 @@
 import { prisma } from '../../prisma';
 import { lineClient } from '../client';
 import { createAccount } from '../../services/account';
+import { createCreditCard } from '../../services/creditcard';
 import { logger } from '../../logger';
 
 type PendingAccount = {
@@ -15,13 +16,17 @@ export function setPendingAccount(userId: string, data: PendingAccount): void {
   pending.set(userId, data);
 }
 
-// 由 message-text 在回覆時附 Quick Reply 詢問
+// 由 message-text 在回覆時附 Quick Reply 詢問（帳戶 / 信用卡 / 不用）
 export function buildAddAccountQuickReply(name: string) {
   return {
     items: [
       {
         type: 'action' as const,
-        action: { type: 'postback' as const, label: `✅ 新增「${name}」`.slice(0, 20), data: 'action=confirm_add_account', displayText: `新增帳戶 ${name}` },
+        action: { type: 'postback' as const, label: `👛 帳戶`, data: 'action=confirm_add_account', displayText: `新增帳戶 ${name}` },
+      },
+      {
+        type: 'action' as const,
+        action: { type: 'postback' as const, label: `💳 信用卡`, data: 'action=add_credit_card', displayText: `新增信用卡 ${name}` },
       },
       {
         type: 'action' as const,
@@ -29,6 +34,35 @@ export function buildAddAccountQuickReply(name: string) {
       },
     ],
   };
+}
+
+// 確認新增為「信用卡」：用預設額度/結算日/繳費日建立，並把剛記的交易改綁到卡
+export async function confirmPendingCreditCard(userId: string, replyToken: string): Promise<void> {
+  const p = pending.get(userId);
+  if (!p) {
+    await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: '沒有待新增的項目了。' }] });
+    return;
+  }
+  pending.delete(userId);
+  try {
+    let card = await prisma.creditCard.findFirst({ where: { familyId: p.familyId, name: p.name } });
+    if (!card) card = await createCreditCard({ familyId: p.familyId, name: p.name }); // 預設額度0/結算1/繳費15
+    if (p.txnIds.length > 0) {
+      await prisma.transaction.updateMany({ where: { id: { in: p.txnIds } }, data: { creditCardId: card.id, accountId: null } });
+    }
+    await lineClient.replyMessage({
+      replyToken,
+      messages: [
+        {
+          type: 'text',
+          text: `已新增信用卡「${card.name}」💳 並把剛剛 ${p.txnIds.length} 筆改記到它。\n\n請到記帳簿 →「信用卡」設定額度 / 結算日 / 繳費日，繳費提醒才會準。`,
+        },
+      ],
+    });
+  } catch (err) {
+    logger.error({ err, userId }, 'confirmPendingCreditCard failed');
+    await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: '新增信用卡失敗了，請到記帳簿手動新增。' }] });
+  }
 }
 
 export async function confirmPendingAccount(userId: string, replyToken: string): Promise<void> {

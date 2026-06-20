@@ -175,7 +175,7 @@ export async function handleTextMessage(
       messages: [
         {
           type: 'text',
-          text: `${body}${alertLine}\n\n💡 你提到的「${unknownPay}」還不是帳戶，要新增嗎？\n（信用卡請到記帳簿新增，需填額度/結算日/繳費日）`,
+          text: `${body}${alertLine}\n\n💡 你提到的「${unknownPay}」還不是帳戶，要新增嗎？\n選「信用卡」會先用預設值建立，記得再到記帳簿補額度/結算日/繳費日。`,
           quickReply: buildAddAccountQuickReply(unknownPay),
         },
       ],

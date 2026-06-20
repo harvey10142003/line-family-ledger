@@ -3,7 +3,7 @@ import { lineClient } from '../client';
 import { createFamily, joinFamily, findMemberByLineId } from '../../services/family';
 import { buildInviteUrl } from './follow';
 import { confirmPendingBill, cancelPendingBill } from './message-file';
-import { confirmPendingAccount, cancelPendingAccount } from './pending-account';
+import { confirmPendingAccount, cancelPendingAccount, confirmPendingCreditCard } from './pending-account';
 import { handleQuickFix } from './quick-fix';
 import { logger } from '../../logger';
 
@@ -58,6 +58,10 @@ export async function handlePostback(event: PostbackEvent): Promise<void> {
 
     case 'cancel_add_account':
       await cancelPendingAccount(userId, event.replyToken);
+      return;
+
+    case 'add_credit_card':
+      await confirmPendingCreditCard(userId, event.replyToken);
       return;
 
     case 'fix_cat':
