@@ -28,6 +28,7 @@ model Family {
   transfers    Transfer[]
   creditCards  CreditCard[]
   recurringRules RecurringRule[]
+  savingsGoals SavingsGoal[]
 
   @@index([ownerLineId])
 }
@@ -156,6 +157,24 @@ enum AccountType {
   CREDIT_CARD  // 信用卡
   EPAYMENT     // 電子支付（LINE Pay / 街口…）
   OTHER
+}
+
+// ===== 儲蓄目標 =====
+model SavingsGoal {
+  id           String    @id @default(cuid())
+  familyId     String
+  name         String
+  icon         String?
+  targetAmount Decimal   @db.Decimal(12, 2)
+  savedAmount  Decimal   @db.Decimal(12, 2) @default(0)
+  targetDate   DateTime?
+  isArchived   Boolean   @default(false)
+  sortOrder    Int       @default(0)
+  createdAt    DateTime  @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
 }
 
 // ===== 固定收支 / 週期記帳（每月或每週自動產生交易）=====

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../prisma';
-import { getMonthlySummary, getMonthlyTransactions, getMonthlyTransfers, getSettlement } from '../services/transaction';
+import { getMonthlySummary, getMonthlyTransactions, getMonthlyTransfers, getSettlement, getTrend } from '../services/transaction';
+import { getSavingsGoals, createSavingsGoal, updateSavingsGoal, adjustSaved, deleteSavingsGoal } from '../services/savings';
 import { getBudgets, setBudget, getBudgetStatus } from '../services/budget';
 import {
   getAccountsWithBalances,
@@ -303,6 +304,81 @@ liffRouter.patch('/transactions/:id/account', async (req, res) => {
     data: { accountId: accountId ?? null },
   });
   return res.json({ id: updated.id, accountId: updated.accountId });
+});
+
+// 收支趨勢（近 N 月）
+liffRouter.get('/trend', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  const months = Math.min(Math.max(Number(req.query.months) || 6, 3), 12);
+  return res.json({ trend: await getTrend(member.familyId, months) });
+});
+
+// ===== 儲蓄目標 =====
+liffRouter.get('/savings', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  return res.json({ goals: await getSavingsGoals(member.familyId) });
+});
+
+liffRouter.post('/savings', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  const b = (req.body ?? {}) as any;
+  if (!b.name?.trim() || typeof b.targetAmount !== 'number' || !(b.targetAmount > 0)) {
+    return res.status(400).json({ error: 'name and positive targetAmount required' });
+  }
+  const g = await createSavingsGoal({ familyId: member.familyId, name: b.name.trim(), targetAmount: b.targetAmount, savedAmount: b.savedAmount, targetDate: b.targetDate });
+  return res.json({ id: g.id });
+});
+
+liffRouter.put('/savings/:id', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  const b = (req.body ?? {}) as any;
+  try {
+    await updateSavingsGoal({ familyId: member.familyId, id: req.params.id, name: b.name, targetAmount: b.targetAmount, targetDate: b.targetDate, isArchived: b.isArchived });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
+// 存入/取出（body.delta，正=存入 負=取出）
+liffRouter.post('/savings/:id/adjust', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  const delta = Number((req.body ?? {}).delta);
+  if (!Number.isFinite(delta) || delta === 0) return res.status(400).json({ error: 'delta required' });
+  try {
+    const g = await adjustSaved(member.familyId, req.params.id, delta);
+    return res.json({ savedAmount: Number(g.savedAmount) });
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
+liffRouter.delete('/savings/:id', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  try {
+    await deleteSavingsGoal(member.familyId, req.params.id);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
 });
 
 // ===== 固定收支 =====

@@ -3,11 +3,14 @@
 import { useEffect, useState, useCallback } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { initLiff, getProfile } from '@/lib/liff';
-import { apiGet, apiPut, apiDownload } from '@/lib/api';
+import { apiGet, apiDownload } from '@/lib/api';
 import AccountsSection from '@/components/AccountsSection';
 import CreditCardsSection from '@/components/CreditCardsSection';
 import TransactionsSection from '@/components/TransactionsSection';
 import RecurringSection from '@/components/RecurringSection';
+import BudgetSection from '@/components/BudgetSection';
+import TrendChart from '@/components/TrendChart';
+import GoalsSection from '@/components/GoalsSection';
 
 type MeResp =
   | { joined: false }
@@ -20,7 +23,6 @@ type Summary = {
   byCategory: { name: string; icon: string | null; type: 'EXPENSE' | 'INCOME'; amount: number }[];
   byMember: { memberId: string; name: string; amount: number }[];
 };
-type BudgetStatus = { month: string; overall: { budget: number; spent: number; pct: number } | null };
 type Settlement = {
   memberCount: number;
   totalExpense: number;
@@ -51,11 +53,8 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>('overview');
   const [month, setMonth] = useState(currentMonth());
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [budget, setBudget] = useState<BudgetStatus | null>(null);
   const [settlement, setSettlement] = useState<Settlement | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
-  const [budgetInput, setBudgetInput] = useState('');
-  const [savingBudget, setSavingBudget] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -76,15 +75,12 @@ export default function Home() {
   const loadMonth = useCallback(async (uid: string, mon: string) => {
     setDataLoading(true);
     try {
-      const [s, b, st] = await Promise.all([
+      const [s, st] = await Promise.all([
         apiGet<Summary>(`/api/liff/summary?month=${mon}`, uid),
-        apiGet<BudgetStatus>(`/api/liff/budget-status?month=${mon}`, uid),
         apiGet<Settlement>(`/api/liff/settlement?month=${mon}`, uid),
       ]);
       setSummary(s);
-      setBudget(b);
       setSettlement(st);
-      setBudgetInput(b.overall ? String(b.overall.budget) : '');
     } catch (e: any) {
       setError(e?.message ?? String(e));
     } finally {
@@ -96,16 +92,6 @@ export default function Home() {
     if (userId && me && (me as any).joined) loadMonth(userId, month);
   }, [userId, me, month, loadMonth]);
 
-  const saveBudget = async () => {
-    if (!userId) return;
-    setSavingBudget(true);
-    try {
-      await apiPut('/api/liff/budgets', userId, { categoryId: null, amount: Number(budgetInput) || 0 });
-      await loadMonth(userId, month);
-    } finally {
-      setSavingBudget(false);
-    }
-  };
   const doExport = async () => {
     if (!userId) return;
     try { await apiDownload(`/api/liff/export?month=${month}`, userId, `ledger-${month}.csv`); } catch (e: any) { setError(e?.message ?? String(e)); }
@@ -124,8 +110,6 @@ export default function Home() {
 
   const expenseCats = summary?.byCategory.filter((c) => c.type === 'EXPENSE') ?? [];
   const totalExpense = summary?.totalExpense ?? 0;
-  const ov = budget?.overall;
-  const barColor = !ov ? '' : ov.pct >= 100 ? 'bg-red-500' : ov.pct >= 80 ? 'bg-amber-400' : 'bg-emerald-400';
   const showMonthBar = tab === 'overview' || tab === 'tx';
 
   return (
@@ -174,26 +158,8 @@ export default function Home() {
 
             {dataLoading && <p className="text-center text-sm text-gray-400">更新中…</p>}
 
-            {/* 預算 */}
-            <section className="rounded-lg bg-white p-4 shadow-sm">
-              <h2 className="mb-2 text-sm font-semibold text-gray-700">每月預算</h2>
-              {ov && (
-                <div className="mb-3">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-600">已用 {ntd(ov.spent)} / {ntd(ov.budget)}</span>
-                    <span className={ov.pct >= 100 ? 'font-semibold text-red-500' : 'text-gray-500'}>{ov.pct}%</span>
-                  </div>
-                  <div className="mt-1 h-2.5 rounded-full bg-gray-100">
-                    <div className={`h-2.5 rounded-full ${barColor}`} style={{ width: `${Math.min(ov.pct, 100)}%` }} />
-                  </div>
-                </div>
-              )}
-              <div className="flex items-center gap-2">
-                <input type="number" inputMode="numeric" value={budgetInput} onChange={(e) => setBudgetInput(e.target.value)} placeholder="設定每月預算金額" className="min-w-0 flex-1 rounded-md border border-gray-200 px-3 py-2 text-sm" />
-                <button onClick={saveBudget} disabled={savingBudget} className="shrink-0 rounded-md bg-indigo-500 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{savingBudget ? '儲存中' : '儲存'}</button>
-              </div>
-              <p className="mt-1 text-xs text-gray-400">設 0 即取消。每月循環套用。</p>
-            </section>
+            {/* 預算（整體 + 分類）*/}
+            {userId && <BudgetSection userId={userId} month={month} onChanged={() => userId && loadMonth(userId, month)} />}
 
             <div className="md:grid md:grid-cols-2 md:gap-4 md:space-y-0 space-y-4">
               {/* 分類圓餅圖 */}
@@ -247,6 +213,9 @@ export default function Home() {
               )}
             </div>
 
+            {/* 收支趨勢 */}
+            {userId && <TrendChart userId={userId} />}
+
             {/* 分帳結算 */}
             {settlement && settlement.memberCount > 1 && settlement.totalExpense > 0 && (
               <section className="rounded-lg bg-white p-4 shadow-sm">
@@ -284,6 +253,7 @@ export default function Home() {
         {tab === 'more' && userId && (
           <>
             <RecurringSection userId={userId} />
+            <GoalsSection userId={userId} />
             <section className="rounded-lg bg-white p-4 shadow-sm">
               <h2 className="mb-3 text-sm font-semibold text-gray-700">匯出</h2>
               <button onClick={doExport} className="w-full rounded-lg border border-gray-200 px-4 py-3 text-left text-sm">

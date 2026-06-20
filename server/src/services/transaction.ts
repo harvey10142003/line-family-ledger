@@ -99,6 +99,35 @@ export async function recordTransactionsBatch(params: {
   return { count: rows.length, total: Math.round(total * 100) / 100 };
 }
 
+// 近 N 個月收支趨勢（舊→新），台北月界
+export async function getTrend(familyId: string, months = 6): Promise<{ month: string; expense: number; income: number }[]> {
+  const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const list: string[] = [];
+  for (let i = months - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    list.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+  }
+  const start = new Date(`${list[0]}-01T00:00:00+08:00`);
+
+  const txs = await prisma.transaction.findMany({
+    where: { familyId, paidAt: { gte: start } },
+    select: { amount: true, paidAt: true, category: { select: { type: true } } },
+  });
+
+  const map = new Map<string, { expense: number; income: number }>();
+  list.forEach((m) => map.set(m, { expense: 0, income: 0 }));
+  for (const t of txs) {
+    const tp = new Date(t.paidAt.getTime() + 8 * 60 * 60 * 1000);
+    const key = `${tp.getUTCFullYear()}-${String(tp.getUTCMonth() + 1).padStart(2, '0')}`;
+    const bucket = map.get(key);
+    if (!bucket) continue;
+    const amt = Number(t.amount);
+    if (t.category.type === 'INCOME') bucket.income += amt;
+    else bucket.expense += amt;
+  }
+  return list.map((m) => ({ month: m, expense: Math.round((map.get(m)!.expense) * 100) / 100, income: Math.round((map.get(m)!.income) * 100) / 100 }));
+}
+
 export type MonthlySummary = {
   month: string;
   totalExpense: number;
