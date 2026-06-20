@@ -2,19 +2,32 @@ import { prisma } from '../prisma';
 import type { AccountType } from '@prisma/client';
 
 // 建立家庭時 / 首次使用帳戶功能時自動套用的預設帳戶
-// 信用卡已獨立為 CreditCard，預設帳戶不含信用卡
+// 信用卡已獨立為 CreditCard，預設帳戶 = 現金 / 銀行 / 電子錢包
 export const DEFAULT_ACCOUNTS: { name: string; type: AccountType; icon: string; isDefault: boolean; sortOrder: number }[] = [
   { name: '現金', type: 'CASH', icon: '💵', isDefault: true, sortOrder: 1 },
   { name: '銀行', type: 'BANK', icon: '🏦', isDefault: false, sortOrder: 2 },
+  { name: '電子錢包', type: 'EPAYMENT', icon: '👛', isDefault: false, sortOrder: 3 },
 ];
 
-// 確保家庭有預設帳戶（含舊家庭 lazy 補建）。回傳該家庭帳戶數。
+// 確保家庭有預設帳戶（含舊家庭 lazy 補建）。
 export async function ensureDefaultAccounts(familyId: string): Promise<void> {
   const count = await prisma.account.count({ where: { familyId } });
-  if (count > 0) return;
-  await prisma.account.createMany({
-    data: DEFAULT_ACCOUNTS.map((a) => ({ familyId, ...a })),
+  if (count === 0) {
+    await prisma.account.createMany({ data: DEFAULT_ACCOUNTS.map((a) => ({ familyId, ...a })) });
+  }
+  // 既有家庭遷移：把舊的「信用卡」帳戶移出帳戶（信用卡已獨立成 CreditCard）
+  await prisma.account.updateMany({
+    where: { familyId, type: 'CREDIT_CARD', isArchived: false },
+    data: { isArchived: true },
   });
+  // 確保有「電子錢包」帳戶（舊家庭在 EPAYMENT 出現前種的補一個）
+  const hasEpayment = await prisma.account.findFirst({ where: { familyId, type: 'EPAYMENT', isArchived: false } });
+  if (!hasEpayment) {
+    const max = await prisma.account.aggregate({ where: { familyId }, _max: { sortOrder: true } });
+    await prisma.account.create({
+      data: { familyId, name: '電子錢包', type: 'EPAYMENT', icon: '👛', sortOrder: (max._max.sortOrder ?? 0) + 1 },
+    });
+  }
 }
 
 export type AccountWithBalance = {

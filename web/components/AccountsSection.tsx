@@ -21,7 +21,7 @@ const TYPE_META: Record<AccountType, { label: string; icon: string }> = {
   CASH: { label: '現金', icon: '💵' },
   BANK: { label: '銀行', icon: '🏦' },
   CREDIT_CARD: { label: '信用卡', icon: '💳' }, // 舊資料顯示用；信用卡已獨立區塊
-  EPAYMENT: { label: '電子支付', icon: '📱' },
+  EPAYMENT: { label: '電子錢包', icon: '👛' },
   OTHER: { label: '其他', icon: '📦' },
 };
 
