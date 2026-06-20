@@ -13,6 +13,7 @@ type TxItem = {
   categoryIcon: string | null;
   note: string | null;
   memberName: string;
+  isShared: boolean;
   accountId: string | null;
   creditCardId: string | null;
   accountName: string | null;
@@ -59,6 +60,7 @@ export default function TransactionsSection({
   const [fDate, setFDate] = useState(todayStr());
   const [fNote, setFNote] = useState('');
   const [fPay, setFPay] = useState(''); // '' | acc:<id> | card:<id>
+  const [fShared, setFShared] = useState(true);
 
   const loadTx = useCallback(async () => {
     setLoading(true);
@@ -96,6 +98,7 @@ export default function TransactionsSection({
     setFDate(todayStr());
     setFNote('');
     setFPay(accounts[0] ? `acc:${accounts[0].id}` : '');
+    setFShared(true);
     setShowForm(true);
   };
 
@@ -108,6 +111,7 @@ export default function TransactionsSection({
     setFDate(t.paidAt.slice(0, 10));
     setFNote(t.note ?? '');
     setFPay(t.creditCardId ? `card:${t.creditCardId}` : t.accountId ? `acc:${t.accountId}` : '');
+    setFShared(t.isShared);
     setShowForm(true);
   };
 
@@ -115,7 +119,7 @@ export default function TransactionsSection({
     if (!fCat || !(Number(fAmount) > 0)) return;
     const accountId = fPay.startsWith('acc:') ? fPay.slice(4) : null;
     const creditCardId = fPay.startsWith('card:') ? fPay.slice(5) : null;
-    const body = { categoryId: fCat, amount: Number(fAmount), note: fNote, paidAt: fDate, accountId, creditCardId };
+    const body = { categoryId: fCat, amount: Number(fAmount), note: fNote, paidAt: fDate, accountId, creditCardId, isShared: fShared };
     setBusy(true);
     try {
       if (editing) await apiPatch(`/api/liff/transactions/${editing.id}`, userId, body);
@@ -180,6 +184,7 @@ export default function TransactionsSection({
                   <div className="min-w-0">
                     <p className="truncate text-sm">
                       {t.categoryIcon ?? ''} {t.note || t.categoryName}
+                      {t.type === 'EXPENSE' && !t.isShared && <span className="ml-1 rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-500">個人</span>}
                     </p>
                     <p className="text-xs text-gray-400">
                       {t.paidAt.slice(5, 10)}　{t.memberName}
@@ -242,6 +247,16 @@ export default function TransactionsSection({
                 </select>
               </label>
             </div>
+
+            {fType === 'EXPENSE' && (
+              <div className="mb-2">
+                <span className="text-xs text-gray-500">分帳</span>
+                <div className="mt-1 flex rounded-lg bg-gray-100 p-1">
+                  <button onClick={() => setFShared(true)} className={`flex-1 rounded-md py-1.5 text-sm ${fShared ? 'bg-white font-medium shadow-sm' : 'text-gray-500'}`}>👨‍👩‍👧 共同（分帳）</button>
+                  <button onClick={() => setFShared(false)} className={`flex-1 rounded-md py-1.5 text-sm ${!fShared ? 'bg-white font-medium shadow-sm' : 'text-gray-500'}`}>🧍 個人（不分帳）</button>
+                </div>
+              </div>
+            )}
 
             <label className="text-xs text-gray-500">備註</label>
             <input value={fNote} onChange={(e) => setFNote(e.target.value)} placeholder="例如：午餐" className="mb-3 mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm" />

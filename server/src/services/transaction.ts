@@ -22,6 +22,7 @@ export async function recordTransaction(params: {
   paidAt?: Date;
   accountId?: string | null;
   creditCardId?: string | null;
+  isShared?: boolean;
 }) {
   const { familyId, memberId, parsed } = params;
 
@@ -50,6 +51,7 @@ export async function recordTransaction(params: {
       source: params.source ?? 'TEXT',
       accountId: params.accountId ?? null,
       creditCardId: params.creditCardId ?? null,
+      isShared: params.isShared ?? true,
     },
     include: { category: true, member: true, account: true, creditCard: true },
   });
@@ -172,6 +174,7 @@ export async function getSettlement(familyId: string, month: string): Promise<Se
   let totalExpense = 0;
   for (const t of txs) {
     if (t.category.type !== 'EXPENSE') continue;
+    if (!t.isShared) continue; // 個人支出不納入分帳
     const amt = Number(t.amount);
     totalExpense += amt;
     paidBy.set(t.memberId, (paidBy.get(t.memberId) ?? 0) + amt);
@@ -248,6 +251,7 @@ export async function getMonthlyTransactions(familyId: string, month: string) {
     categoryIcon: t.category.icon,
     note: t.note,
     memberName: t.member.displayName,
+    isShared: t.isShared,
     accountId: t.accountId,
     creditCardId: t.creditCardId,
     // 付款顯示：帳戶或信用卡

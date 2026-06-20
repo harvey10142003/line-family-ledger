@@ -27,6 +27,7 @@ model Family {
   accounts     Account[]
   transfers    Transfer[]
   creditCards  CreditCard[]
+  recurringRules RecurringRule[]
 
   @@index([ownerLineId])
 }
@@ -87,6 +88,7 @@ model Transaction {
   amount     Decimal           @db.Decimal(12, 2)
   note       String?
   paidAt     DateTime
+  isShared   Boolean           @default(true) // true=家庭共同(納入分帳)；false=個人支出(不分帳)
   source     TransactionSource @default(TEXT)
   createdAt  DateTime          @default(now())
 
@@ -105,9 +107,10 @@ model Transaction {
 }
 
 enum TransactionSource {
-  TEXT   // LINE 文字訊息輸入
-  PHOTO  // 收據拍照辨識
-  MANUAL // LIFF 表單手動輸入
+  TEXT      // LINE 文字訊息輸入
+  PHOTO     // 收據拍照辨識
+  MANUAL    // LIFF 表單手動輸入
+  RECURRING // 固定收支自動產生
 }
 
 // ===== 預算（每月循環）=====
@@ -153,6 +156,34 @@ enum AccountType {
   CREDIT_CARD  // 信用卡
   EPAYMENT     // 電子支付（LINE Pay / 街口…）
   OTHER
+}
+
+// ===== 固定收支 / 週期記帳（每月或每週自動產生交易）=====
+model RecurringRule {
+  id           String        @id @default(cuid())
+  familyId     String
+  memberId     String // 建立者（產生的交易記在他名下）
+  categoryId   String
+  accountId    String?
+  creditCardId String?
+  amount       Decimal       @db.Decimal(12, 2)
+  note         String?
+  isShared     Boolean       @default(true)
+  frequency    RecurringFreq @default(MONTHLY)
+  dayOfMonth   Int           @default(1) // MONTHLY 用（1-31，超過月底自動clamp）
+  dayOfWeek    Int           @default(1) // WEEKLY 用（0=日 .. 6=六）
+  isActive     Boolean       @default(true)
+  lastPostedAt DateTime? // 防同日重複產生
+  createdAt    DateTime      @default(now())
+
+  family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+}
+
+enum RecurringFreq {
+  MONTHLY
+  WEEKLY
 }
 
 // ===== 信用卡（與帳戶分開：有額度/結算日/繳費日）=====

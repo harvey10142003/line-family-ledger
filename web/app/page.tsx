@@ -7,6 +7,7 @@ import { apiGet, apiPut, apiDownload } from '@/lib/api';
 import AccountsSection from '@/components/AccountsSection';
 import CreditCardsSection from '@/components/CreditCardsSection';
 import TransactionsSection from '@/components/TransactionsSection';
+import RecurringSection from '@/components/RecurringSection';
 
 type MeResp =
   | { joined: false }
@@ -280,14 +281,17 @@ export default function Home() {
         )}
 
         {/* ===== 更多 ===== */}
-        {tab === 'more' && (
-          <section className="rounded-lg bg-white p-4 shadow-sm">
-            <h2 className="mb-3 text-sm font-semibold text-gray-700">更多</h2>
-            <button onClick={doExport} className="w-full rounded-lg border border-gray-200 px-4 py-3 text-left text-sm">
-              ⬇ 匯出本月 CSV（{month}）
-            </button>
-            <p className="mt-3 text-xs text-gray-400">更多功能陸續加入：固定收支、儲蓄目標、趨勢圖、月報…</p>
-          </section>
+        {tab === 'more' && userId && (
+          <>
+            <RecurringSection userId={userId} />
+            <section className="rounded-lg bg-white p-4 shadow-sm">
+              <h2 className="mb-3 text-sm font-semibold text-gray-700">匯出</h2>
+              <button onClick={doExport} className="w-full rounded-lg border border-gray-200 px-4 py-3 text-left text-sm">
+                ⬇ 匯出本月 CSV（{month}）
+              </button>
+              <p className="mt-3 text-xs text-gray-400">更多功能陸續加入：儲蓄目標、趨勢圖、月報…</p>
+            </section>
+          </>
         )}
       </main>
 

@@ -10,7 +10,8 @@ import {
   resolveAccountId,
 } from '../services/account';
 import { getCreditCards, createCreditCard, updateCreditCard } from '../services/creditcard';
-import type { AccountType } from '@prisma/client';
+import { getRecurringRules, createRecurringRule, updateRecurringRule, deleteRecurringRule } from '../services/recurring';
+import type { AccountType, RecurringFreq } from '@prisma/client';
 
 export const liffRouter = Router();
 
@@ -304,6 +305,84 @@ liffRouter.patch('/transactions/:id/account', async (req, res) => {
   return res.json({ id: updated.id, accountId: updated.accountId });
 });
 
+// ===== 固定收支 =====
+liffRouter.get('/recurring', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  return res.json({ rules: await getRecurringRules(member.familyId) });
+});
+
+liffRouter.post('/recurring', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  const b = (req.body ?? {}) as any;
+  if (!b.categoryId || typeof b.amount !== 'number' || !(b.amount > 0)) {
+    return res.status(400).json({ error: 'categoryId and positive amount required' });
+  }
+  try {
+    const rule = await createRecurringRule({
+      familyId: member.familyId,
+      memberId: member.id,
+      categoryId: b.categoryId,
+      amount: b.amount,
+      note: b.note,
+      isShared: b.isShared,
+      frequency: b.frequency as RecurringFreq | undefined,
+      dayOfMonth: b.dayOfMonth,
+      dayOfWeek: b.dayOfWeek,
+      accountId: b.accountId,
+      creditCardId: b.creditCardId,
+    });
+    return res.json({ id: rule.id });
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
+liffRouter.put('/recurring/:id', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  const b = (req.body ?? {}) as any;
+  try {
+    await updateRecurringRule({
+      familyId: member.familyId,
+      id: req.params.id,
+      categoryId: b.categoryId,
+      amount: b.amount,
+      note: b.note,
+      isShared: b.isShared,
+      frequency: b.frequency,
+      dayOfMonth: b.dayOfMonth,
+      dayOfWeek: b.dayOfWeek,
+      accountId: b.accountId,
+      creditCardId: b.creditCardId,
+      isActive: b.isActive,
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
+liffRouter.delete('/recurring/:id', async (req, res) => {
+  const lineUserId = req.header('x-line-user-id');
+  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const member = await resolveMember(lineUserId);
+  if (!member) return res.status(404).json({ error: 'not in any family' });
+  try {
+    await deleteRecurringRule(member.familyId, req.params.id);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(400).json({ error: String(err) });
+  }
+});
+
 // 分類清單（給新增/編輯交易的分類選單）
 liffRouter.get('/categories', async (req, res) => {
   const lineUserId = req.header('x-line-user-id');
@@ -339,6 +418,7 @@ liffRouter.post('/transactions', async (req, res) => {
     paidAt?: string;
     accountId?: string | null;
     creditCardId?: string | null;
+    isShared?: boolean;
   };
   if (!b.categoryId || typeof b.amount !== 'number' || !(b.amount > 0)) {
     return res.status(400).json({ error: 'categoryId and positive amount required' });
@@ -365,6 +445,7 @@ liffRouter.post('/transactions', async (req, res) => {
       source: 'MANUAL',
       accountId: b.creditCardId ? null : b.accountId ?? null,
       creditCardId: b.creditCardId ?? null,
+      isShared: b.isShared ?? true,
     },
   });
   return res.json({ id: tx.id });
@@ -389,6 +470,7 @@ liffRouter.patch('/transactions/:id', async (req, res) => {
   }
   if (typeof b.amount === 'number' && b.amount > 0) data.amount = Math.round(b.amount * 100) / 100;
   if (b.note !== undefined) data.note = (b.note as string)?.trim() || null;
+  if (typeof b.isShared === 'boolean') data.isShared = b.isShared;
   const pa = parsePaidAt(b.paidAt);
   if (pa) data.paidAt = pa;
   // 付款方式：accountId 與 creditCardId 二擇一（給其一就清掉另一）

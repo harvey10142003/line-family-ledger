@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { logger } from '../logger';
 import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders } from './reminders';
+import { postDueRecurring } from '../services/recurring';
 
 const TZ = 'Asia/Taipei';
 
@@ -39,5 +40,14 @@ export function startSchedulers(): void {
     { timezone: TZ },
   );
 
-  logger.info('reminder schedulers started (Asia/Taipei): monthly 1st 09:00, weekly Mon 09:00, card due daily 10:00');
+  // 每天 08:00（台北）產生到期的固定收支
+  cron.schedule(
+    '0 8 * * *',
+    () => {
+      postDueRecurring().catch((err) => logger.error({ err }, 'recurring post job failed'));
+    },
+    { timezone: TZ },
+  );
+
+  logger.info('reminder schedulers started (Asia/Taipei): recurring 08:00, monthly 1st 09:00, weekly Mon 09:00, card due 10:00');
 }

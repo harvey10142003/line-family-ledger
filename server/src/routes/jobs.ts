@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders } from '../jobs/reminders';
+import { postDueRecurring } from '../services/recurring';
 import { logger } from '../logger';
 
 export const jobsRouter = Router();
@@ -23,6 +24,9 @@ jobsRouter.post('/:task', async (req, res) => {
     if (task === 'card-due') {
       const days = typeof req.query.days === 'string' ? Number(req.query.days) : 3;
       return res.json({ task, ...(await sendCreditCardDueReminders(Number.isFinite(days) ? days : 3)) });
+    }
+    if (task === 'recurring') {
+      return res.json({ task, ...(await postDueRecurring()) });
     }
     return res.status(404).json({ error: `unknown task: ${task}` });
   } catch (err) {
