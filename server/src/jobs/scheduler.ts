@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { logger } from '../logger';
-import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders } from './reminders';
+import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders, sendRecordNudges } from './reminders';
 import { postDueRecurring } from '../services/recurring';
 
 const TZ = 'Asia/Taipei';
@@ -49,5 +49,14 @@ export function startSchedulers(): void {
     { timezone: TZ },
   );
 
-  logger.info('reminder schedulers started (Asia/Taipei): recurring 08:00, monthly 1st 09:00, weekly Mon 09:00, card due 10:00');
+  // 每天 21:00（台北）今天還沒記帳的家庭輕推
+  cron.schedule(
+    '0 21 * * *',
+    () => {
+      sendRecordNudges().catch((err) => logger.error({ err }, 'record nudge job failed'));
+    },
+    { timezone: TZ },
+  );
+
+  logger.info('reminder schedulers started (Asia/Taipei): recurring 08:00, monthly 1st 09:00, weekly Mon 09:00, card due 10:00, nudge 21:00');
 }

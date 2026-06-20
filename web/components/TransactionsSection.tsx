@@ -48,6 +48,10 @@ export default function TransactionsSection({
   const [cards, setCards] = useState<Card[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
+  const [showFilter, setShowFilter] = useState(false);
+  const [filType, setFilType] = useState<'ALL' | TxType>('ALL');
+  const [filCat, setFilCat] = useState('');
+  const [filMember, setFilMember] = useState('');
 
   const [editing, setEditing] = useState<TxItem | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -147,15 +151,19 @@ export default function TransactionsSection({
   };
 
   const kw = q.trim().toLowerCase();
-  const filtered = kw
-    ? items.filter(
-        (t) =>
-          (t.note ?? '').toLowerCase().includes(kw) ||
-          t.categoryName.toLowerCase().includes(kw) ||
-          (t.accountName ?? '').toLowerCase().includes(kw) ||
-          t.memberName.toLowerCase().includes(kw),
-      )
-    : items;
+  const catOptions = [...new Set(items.map((t) => t.categoryName))];
+  const memberOptions = [...new Set(items.map((t) => t.memberName))];
+  const filtered = items.filter((t) => {
+    if (filType !== 'ALL' && t.type !== filType) return false;
+    if (filCat && t.categoryName !== filCat) return false;
+    if (filMember && t.memberName !== filMember) return false;
+    if (kw) {
+      const hay = `${t.note ?? ''} ${t.categoryName} ${t.accountName ?? ''} ${t.memberName}`.toLowerCase();
+      if (!hay.includes(kw)) return false;
+    }
+    return true;
+  });
+  const filterActive = filType !== 'ALL' || !!filCat || !!filMember;
 
   const formCats = cats.filter((c) => c.type === fType);
 
@@ -168,8 +176,30 @@ export default function TransactionsSection({
           placeholder="搜尋備註 / 分類 / 帳戶 / 成員"
           className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm"
         />
+        <button onClick={() => setShowFilter((s) => !s)} className={`shrink-0 rounded-lg border px-3 py-2 text-sm ${filterActive ? 'border-indigo-400 bg-indigo-50 text-indigo-600' : 'border-gray-200 bg-white text-gray-600'}`}>篩選</button>
         <button onClick={openAdd} className="shrink-0 rounded-lg bg-indigo-500 px-4 py-2 text-sm font-medium text-white">+ 記一筆</button>
       </div>
+
+      {showFilter && (
+        <div className="space-y-2 rounded-lg bg-white p-3 shadow-sm">
+          <div className="flex rounded-lg bg-gray-100 p-1 text-sm">
+            {([['ALL', '全部'], ['EXPENSE', '支出'], ['INCOME', '收入']] as const).map(([v, l]) => (
+              <button key={v} onClick={() => setFilType(v)} className={`flex-1 rounded-md py-1.5 ${filType === v ? 'bg-white font-medium shadow-sm' : 'text-gray-500'}`}>{l}</button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <select value={filCat} onChange={(e) => setFilCat(e.target.value)} className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-2 text-sm">
+              <option value="">所有分類</option>
+              {catOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <select value={filMember} onChange={(e) => setFilMember(e.target.value)} className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-2 text-sm">
+              <option value="">所有成員</option>
+              {memberOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          {filterActive && <button onClick={() => { setFilType('ALL'); setFilCat(''); setFilMember(''); }} className="text-xs text-gray-400">清除篩選</button>}
+        </div>
+      )}
 
       <section className="rounded-lg bg-white p-2 shadow-sm sm:p-4">
         {loading ? (

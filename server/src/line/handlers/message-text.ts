@@ -10,6 +10,7 @@ import { getBudgetAlert } from '../../services/budget';
 import { ensureDefaultAccounts, resolveAccountId, findAccountIdByName } from '../../services/account';
 import { resolveCreditCardId } from '../../services/creditcard';
 import { setPendingAccount, buildAddAccountQuickReply } from './pending-account';
+import { buildQuickFixReply } from './quick-fix';
 import { logger } from '../../logger';
 
 // 用戶可能用這些字眼叫出選單
@@ -182,8 +183,10 @@ export async function handleTextMessage(
     return;
   }
 
+  // 單筆記帳：附快速修正（改分類/改個人共同/刪除）
+  const quickReply = txs.length === 1 ? buildQuickFixReply(txs[0].id, txs[0].isShared) : undefined;
   await lineClient.replyMessage({
     replyToken: event.replyToken,
-    messages: [{ type: 'text', text: `${body}${alertLine}` }],
+    messages: [{ type: 'text', text: `${body}${alertLine}`, ...(quickReply ? { quickReply } : {}) }],
   });
 }

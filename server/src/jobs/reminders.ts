@@ -36,12 +36,87 @@ export function prevMonth(month: string): string {
 
 // 推播給一個家庭的所有成員（multicast，最多 500 人）
 async function pushToFamily(memberLineIds: string[], text: string): Promise<void> {
+  await pushMessages(memberLineIds, [{ type: 'text', text }]);
+}
+
+async function pushMessages(memberLineIds: string[], messages: any[]): Promise<void> {
   if (memberLineIds.length === 0) return;
   try {
-    await lineClient.multicast({ to: memberLineIds, messages: [{ type: 'text', text }] });
+    await lineClient.multicast({ to: memberLineIds, messages });
   } catch (err) {
     logger.error({ err, count: memberLineIds.length }, 'multicast failed');
   }
+}
+
+// 月報 Flex 圖卡
+function buildMonthlyFlex(familyName: string, month: string, s: { totalExpense: number; totalIncome: number; byCategory: { name: string; icon: string | null; type: string; amount: number }[] }) {
+  const net = Math.round((s.totalIncome - s.totalExpense) * 100) / 100;
+  const top = s.byCategory.filter((c) => c.type === 'EXPENSE').slice(0, 5);
+  const maxAmt = Math.max(1, ...top.map((c) => c.amount));
+  const catRows = top.map((c) => ({
+    type: 'box',
+    layout: 'vertical',
+    margin: 'md',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        contents: [
+          { type: 'text', text: `${c.icon ?? ''} ${c.name}`, size: 'sm', color: '#555555', flex: 0 },
+          { type: 'text', text: ntd(c.amount), size: 'sm', color: '#111111', align: 'end' },
+        ],
+      },
+      {
+        type: 'box',
+        layout: 'vertical',
+        margin: 'sm',
+        height: '6px',
+        backgroundColor: '#EEEEEE',
+        cornerRadius: '3px',
+        contents: [{ type: 'box', layout: 'vertical', contents: [{ type: 'filler' }], width: `${Math.round((c.amount / maxAmt) * 100)}%`, backgroundColor: '#6366F1', cornerRadius: '3px', height: '6px' }],
+      },
+    ],
+  }));
+
+  return {
+    type: 'flex',
+    altText: `${familyName} ${month} 月結：支出 ${ntd(s.totalExpense)}、收入 ${ntd(s.totalIncome)}`,
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#6366F1',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: `📊 ${month} 月結報告`, color: '#FFFFFF', weight: 'bold', size: 'lg' },
+          { type: 'text', text: familyName, color: '#E0E7FF', size: 'sm', margin: 'sm' },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '支出', size: 'xs', color: '#999999' }, { type: 'text', text: ntd(s.totalExpense), size: 'lg', weight: 'bold', color: '#EF4444' }] },
+              { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '收入', size: 'xs', color: '#999999' }, { type: 'text', text: ntd(s.totalIncome), size: 'lg', weight: 'bold', color: '#10B981' }] },
+              { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: '結餘', size: 'xs', color: '#999999' }, { type: 'text', text: ntd(net), size: 'lg', weight: 'bold', color: net < 0 ? '#EF4444' : '#111111' }] },
+            ],
+          },
+          ...(top.length > 0 ? [{ type: 'separator', margin: 'lg' }, { type: 'text', text: '支出 Top', size: 'sm', weight: 'bold', color: '#555555', margin: 'lg' }, ...catRows] : []),
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [{ type: 'button', style: 'primary', color: '#6366F1', height: 'sm', action: { type: 'uri', label: '打開記帳簿', uri: liffUrl() } }],
+      },
+    },
+  };
 }
 
 // 月結報告：預設推「上個月」。回傳實際推播的家庭數。
@@ -54,24 +129,8 @@ export async function sendMonthlySummaries(month?: string): Promise<{ families: 
     const summary = await getMonthlySummary(fam.id, target);
     if (summary.totalExpense === 0 && summary.totalIncome === 0) continue; // 沒紀錄不打擾
 
-    const top = summary.byCategory
-      .filter((c) => c.type === 'EXPENSE')
-      .slice(0, 3)
-      .map((c) => `${c.icon ?? ''} ${c.name} ${ntd(c.amount)}`)
-      .join('\n');
-
-    const text = [
-      `📊 ${fam.name}　${target} 月結報告`,
-      ``,
-      `本月支出 ${ntd(summary.totalExpense)}`,
-      `本月收入 ${ntd(summary.totalIncome)}`,
-      ...(top ? [``, `支出 Top：`, top] : []),
-      ``,
-      `打開記帳簿看完整報表 👉`,
-      liffUrl(),
-    ].join('\n');
-
-    await pushToFamily(fam.members.map((m) => m.lineUserId), text);
+    const flex = buildMonthlyFlex(fam.name, target, summary);
+    await pushMessages(fam.members.map((m) => m.lineUserId), [flex]);
     pushed++;
   }
 
@@ -146,5 +205,23 @@ export async function sendWeeklyBudgetDigests(): Promise<{ families: number; pus
   }
 
   logger.info({ month, families: families.length, pushed }, 'weekly budget digests sent');
+  return { families: families.length, pushed };
+}
+
+// 記帳 nudge：傍晚跑，今天還沒記任何帳的家庭輕推一下
+export async function sendRecordNudges(): Promise<{ families: number; pushed: number }> {
+  const t = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const ymd = `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`;
+  const todayStart = new Date(`${ymd}T00:00:00+08:00`);
+
+  const families = await prisma.family.findMany({ include: { members: true } });
+  let pushed = 0;
+  for (const fam of families) {
+    const cnt = await prisma.transaction.count({ where: { familyId: fam.id, paidAt: { gte: todayStart } } });
+    if (cnt > 0) continue; // 今天有記就不打擾
+    await pushToFamily(fam.members.map((m) => m.lineUserId), '🐷 今天還沒記帳喔～\n花了什麼直接打給我，例如：午餐 120');
+    pushed++;
+  }
+  logger.info({ families: families.length, pushed }, 'record nudges sent');
   return { families: families.length, pushed };
 }

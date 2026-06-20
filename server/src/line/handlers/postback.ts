@@ -4,6 +4,7 @@ import { createFamily, joinFamily, findMemberByLineId } from '../../services/fam
 import { buildInviteUrl } from './follow';
 import { confirmPendingBill, cancelPendingBill } from './message-file';
 import { confirmPendingAccount, cancelPendingAccount } from './pending-account';
+import { handleQuickFix } from './quick-fix';
 import { logger } from '../../logger';
 
 // 暫存使用者狀態：等待輸入家庭名稱 / 家庭碼
@@ -57,6 +58,13 @@ export async function handlePostback(event: PostbackEvent): Promise<void> {
 
     case 'cancel_add_account':
       await cancelPendingAccount(userId, event.replyToken);
+      return;
+
+    case 'fix_cat':
+    case 'set_cat':
+    case 'toggle_shared':
+    case 'del_tx':
+      await handleQuickFix(userId, event.replyToken, action, params);
       return;
 
     default:

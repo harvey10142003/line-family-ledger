@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders } from '../jobs/reminders';
+import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders, sendRecordNudges } from '../jobs/reminders';
 import { postDueRecurring } from '../services/recurring';
 import { logger } from '../logger';
 
@@ -27,6 +27,9 @@ jobsRouter.post('/:task', async (req, res) => {
     }
     if (task === 'recurring') {
       return res.json({ task, ...(await postDueRecurring()) });
+    }
+    if (task === 'nudge') {
+      return res.json({ task, ...(await sendRecordNudges()) });
     }
     return res.status(404).json({ error: `unknown task: ${task}` });
   } catch (err) {
