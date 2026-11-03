@@ -17,6 +17,11 @@ ENV NODE_ENV=production
 # NEXT_PUBLIC_* 必須 build 時嵌入（service env 不會進 build），預設值寫死可用
 ARG NEXT_PUBLIC_LIFF_ID=2010007178-xszHrky3
 ENV NEXT_PUBLIC_LIFF_ID=$NEXT_PUBLIC_LIFF_ID
+# /api/* 反代目標（next.config.js rewrites）。rewrites 在 build 時就寫進 routes-manifest，執行期改 env 無效，
+# 所以要用 build arg 帶入。空值＝沿用 next.config.js 的預設（Zeabur 後端），Zeabur 建置行為不變。
+# GCP 主機：--build-arg API_PROXY_TARGET=http://ledger-server:3000（同一個 docker 網路 ugomk_sub，不繞 Caddy）
+ARG API_PROXY_TARGET=
+ENV API_PROXY_TARGET=$API_PROXY_TARGET
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm --workspace web run build

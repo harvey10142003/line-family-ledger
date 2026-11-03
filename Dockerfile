@@ -29,4 +29,6 @@ COPY --from=build /app/server/package.json ./server/
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./
 EXPOSE 3000
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && node server/dist/index.js"]
+# 不帶 --accept-data-loss：schema 與資料庫不一致且會刪欄位／表時，db push 直接失敗、容器不起來（deploy-sub.sh 會換回舊版），
+# 不會靜默刪資料（2026-11 搬 GCP 時改，原本 Zeabur 版帶這個旗標）。真的要刪欄位時，先手動備份再另外處理。
+CMD ["sh", "-c", "npx prisma db push --skip-generate && node server/dist/index.js"]
