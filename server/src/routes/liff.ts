@@ -13,6 +13,7 @@ import {
 import { getCreditCards, createCreditCard, updateCreditCard } from '../services/creditcard';
 import { getRecurringRules, createRecurringRule, updateRecurringRule, deleteRecurringRule } from '../services/recurring';
 import type { AccountType, RecurringFreq } from '@prisma/client';
+import { ymdTaipei } from '../lib/time-tw';
 
 export const liffRouter = Router();
 
@@ -605,7 +606,7 @@ liffRouter.get('/export', async (req, res) => {
   const header = ['日期', '類型', '分類', '帳戶', '備註', '金額', '記錄者', '來源'];
   const lines = items.map((t) =>
     [
-      t.paidAt.slice(0, 10),
+      ymdTaipei(new Date(t.paidAt)), // paidAt 是 UTC ISO 字串，要轉台北日期
       t.type === 'INCOME' ? '收入' : '支出',
       t.categoryName,
       t.accountName ?? '',
