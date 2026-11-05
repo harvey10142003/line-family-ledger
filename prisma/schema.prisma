@@ -19,33 +19,41 @@ model Family {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  members      FamilyMember[]
-  categories   Category[]
-  transactions Transaction[]
-  invites      InviteLink[]
-  budgets      Budget[]
-  accounts     Account[]
-  transfers    Transfer[]
-  creditCards  CreditCard[]
+  members        FamilyMember[]
+  categories     Category[]
+  transactions   Transaction[]
+  invites        InviteLink[]
+  budgets        Budget[]
+  accounts       Account[]
+  transfers      Transfer[]
+  creditCards    CreditCard[]
   recurringRules RecurringRule[]
-  savingsGoals SavingsGoal[]
+  savingsGoals   SavingsGoal[]
+  liabilities    Liability[]
+  cardStatements CardStatement[]
 
   @@index([ownerLineId])
 }
 
 // ===== 家庭成員（綁定 LINE userId）=====
 model FamilyMember {
-  id          String   @id @default(cuid())
-  familyId    String
-  lineUserId  String
-  displayName String
-  avatarUrl   String?
-  role        Role     @default(MEMBER)
-  joinedAt    DateTime @default(now())
+  id           String   @id @default(cuid())
+  familyId     String
+  lineUserId   String
+  displayName  String
+  avatarUrl    String?
+  role         Role     @default(MEMBER)
+  joinedAt     DateTime @default(now())
+  // 帳單上的戶名（例如「施允瀚」），歸屬比對用。只存應用層加密後的密文（P0-3 加密工具），不存明文；null＝未登記
+  legalNameEnc String?
 
-  family       Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
-  transactions Transaction[]
-  transfers    Transfer[]
+  family           Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  transactions     Transaction[]
+  transfers        Transfer[]
+  // 財務中樞：這位成員「個人」的帳戶／卡／負債（ownerMemberId 指向他）
+  ownedAccounts    Account[]     @relation("AccountOwner")
+  ownedCreditCards CreditCard[]  @relation("CreditCardOwner")
+  ownedLiabilities Liability[]   @relation("LiabilityOwner")
 
   @@unique([familyId, lineUserId])
   @@index([lineUserId])
@@ -80,18 +88,25 @@ enum CategoryType {
 
 // ===== 交易 =====
 model Transaction {
-  id         String            @id @default(cuid())
-  familyId   String
-  memberId   String
-  categoryId String
-  accountId    String? // 付款帳戶（現金/銀行/電子支付）；null = 未指定（含舊資料）
-  creditCardId String? // 用信用卡付款時填此；與 accountId 二擇一
-  amount     Decimal           @db.Decimal(12, 2)
-  note       String?
-  paidAt     DateTime
-  isShared   Boolean           @default(true) // true=家庭共同(納入分帳)；false=個人支出(不分帳)
-  source     TransactionSource @default(TEXT)
-  createdAt  DateTime          @default(now())
+  id               String            @id @default(cuid())
+  familyId         String
+  memberId         String
+  categoryId       String
+  accountId        String? // 付款帳戶（現金/銀行/電子支付）；null = 未指定（含舊資料）
+  creditCardId     String? // 用信用卡付款時填此；與 accountId 二擇一
+  amount           Decimal           @db.Decimal(12, 2)
+  note             String?
+  paidAt           DateTime
+  isShared         Boolean           @default(true) // true=家庭共同(納入分帳)；false=個人支出(不分帳)
+  source           TransactionSource @default(TEXT)
+  createdAt        DateTime          @default(now())
+  // ---- 財務中樞 P1-1（只加不改；舊資料＝家庭、無報帳、無原幣）----
+  bookTo           BookTo            @default(FAMILY) // FAMILY＝家庭的錢；BUSINESS＝代墊公司費用（家庭支出不算）
+  reimburseStatus  ReimburseStatus   @default(NONE) // 代墊公司費用的報帳進度
+  postedAt         DateTime? // 入帳日（帳單上的入帳日，跟消費日 paidAt 分開）；null＝未知
+  originalCurrency String? // 外幣交易的原幣別（ISO 4217，例如 USD）；null＝台幣
+  originalAmount   Decimal?          @db.Decimal(14, 2) // 原幣金額
+  amountEstimated  Boolean           @default(false) // true＝amount 是用參考匯率估的台幣，卡帳單進來後改實際值
 
   family     Family       @relation(fields: [familyId], references: [id], onDelete: Cascade)
   member     FamilyMember @relation(fields: [memberId], references: [id])
@@ -107,10 +122,22 @@ model Transaction {
   @@index([creditCardId])
 }
 
+enum BookTo {
+  FAMILY
+  BUSINESS
+}
+
+enum ReimburseStatus {
+  NONE
+  PENDING
+  CLAIMED
+  REIMBURSED
+}
+
 enum TransactionSource {
-  TEXT      // LINE 文字訊息輸入
-  PHOTO     // 收據拍照辨識
-  MANUAL    // LIFF 表單手動輸入
+  TEXT // LINE 文字訊息輸入
+  PHOTO // 收據拍照辨識
+  MANUAL // LIFF 表單手動輸入
   RECURRING // 固定收支自動產生
 }
 
@@ -131,32 +158,59 @@ model Budget {
 
 // ===== 帳戶（= 付款方式：現金/銀行/信用卡/電子支付）=====
 model Account {
-  id             String      @id @default(cuid())
+  id             String         @id @default(cuid())
   familyId       String
   name           String
-  type           AccountType @default(CASH)
+  type           AccountType    @default(CASH)
   icon           String?
-  openingBalance Decimal     @db.Decimal(12, 2) @default(0) // 期初餘額
-  isDefault      Boolean     @default(false) // 記帳未指定時的預設帳戶
-  isArchived     Boolean     @default(false)
-  sortOrder      Int         @default(0)
-  createdAt      DateTime    @default(now())
+  openingBalance Decimal        @default(0) @db.Decimal(12, 2) // 期初餘額
+  isDefault      Boolean        @default(false) // 記帳未指定時的預設帳戶
+  isArchived     Boolean        @default(false)
+  sortOrder      Int            @default(0)
+  createdAt      DateTime       @default(now())
+  // ---- 財務中樞 P1-1（只加不改；舊資料＝共同、家庭、全家看得到明細）----
+  ownerMemberId  String? // null＝共同帳戶；有值＝該成員個人的
+  visibility     Visibility     @default(FAMILY_FULL) // 對其他家庭成員的可見程度（共同帳戶一律視為全家可見）
+  purpose        AccountPurpose @default(FAMILY) // BUSINESS＝公司帳戶，不算家庭淨資產與收支
+  institution    String? // 銀行代碼／名稱，例如「808 玉山」
+  accountLast4   String? // 帳號末四碼（絕不存全碼）
+  currency       String         @default("TWD")
+  aliases        String[]       @default([]) // 使用者用過的叫法（文字記帳模糊比對、自動學）
 
-  family        Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
-  transactions  Transaction[]
-  transfersOut  Transfer[]    @relation("TransferFrom")
-  transfersIn   Transfer[]    @relation("TransferTo")
+  family            Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  owner             FamilyMember? @relation("AccountOwner", fields: [ownerMemberId], references: [id], onDelete: Restrict)
+  transactions      Transaction[]
+  transfersOut      Transfer[]    @relation("TransferFrom")
+  transfersIn       Transfer[]    @relation("TransferTo")
+  liabilityAutopays Liability[]   @relation("LiabilityPayFrom")
 
   @@unique([familyId, name])
   @@index([familyId])
+  @@index([ownerMemberId])
 }
 
 enum AccountType {
-  CASH         // 現金
-  BANK         // 銀行
-  CREDIT_CARD  // 信用卡
-  EPAYMENT     // 電子支付（LINE Pay / 街口…）
+  CASH // 現金
+  BANK // 銀行（含純網銀，以 institution 區分）
+  CREDIT_CARD // 信用卡
+  EPAYMENT // 電子支付（LINE Pay / 街口…）
   OTHER
+  TIME_DEPOSIT // 定存
+  SECURITIES // 證券（估值，非加減算）
+  INVESTMENT // 基金／保單價值等（估值）
+  CRYPTO // 虛擬資產（估值）
+}
+
+// 帳戶／卡／負債對「其他家庭成員」的可見程度（本人永遠看得到全部）
+enum Visibility {
+  FAMILY_FULL // 全家看得到明細
+  FAMILY_TOTAL_ONLY // 其他成員只看得到總額（餘額／欠款），看不到每一筆
+  OWNER_ONLY // 其他成員完全看不到，也不算進他們看到的家庭數字
+}
+
+enum AccountPurpose {
+  FAMILY
+  BUSINESS
 }
 
 // ===== 儲蓄目標 =====
@@ -166,7 +220,7 @@ model SavingsGoal {
   name         String
   icon         String?
   targetAmount Decimal   @db.Decimal(12, 2)
-  savedAmount  Decimal   @db.Decimal(12, 2) @default(0)
+  savedAmount  Decimal   @default(0) @db.Decimal(12, 2)
   targetDate   DateTime?
   isArchived   Boolean   @default(false)
   sortOrder    Int       @default(0)
@@ -207,42 +261,216 @@ enum RecurringFreq {
 
 // ===== 信用卡（與帳戶分開：有額度/結算日/繳費日）=====
 model CreditCard {
-  id           String   @id @default(cuid())
-  familyId     String
-  name         String
-  creditLimit  Decimal  @db.Decimal(12, 2) @default(0) // 額度
-  statementDay Int      @default(1) // 結算日（每月幾號）
-  dueDay       Int      @default(15) // 繳費日（每月幾號）
-  icon         String?
-  isArchived   Boolean  @default(false)
-  sortOrder    Int      @default(0)
-  createdAt    DateTime @default(now())
+  id              String     @id @default(cuid())
+  familyId        String
+  name            String
+  creditLimit     Decimal    @default(0) @db.Decimal(12, 2) // 額度
+  statementDay    Int        @default(1) // 結算日（每月幾號）
+  dueDay          Int        @default(15) // 繳費日（每月幾號）
+  icon            String?
+  isArchived      Boolean    @default(false)
+  sortOrder       Int        @default(0)
+  createdAt       DateTime   @default(now())
+  // ---- 財務中樞 P1-1（只加不改；舊資料＝共同、全家看得到明細）----
+  ownerMemberId   String? // null＝共同；有值＝該成員的卡（附卡算正卡人）
+  visibility      Visibility @default(FAMILY_FULL)
+  issuer          String? // 發卡行
+  cardLast4       String? // 卡號末四碼（絕不存全碼）
+  isSupplementary Boolean    @default(false) // 附卡
+  aliases         String[]   @default([])
 
-  family       Family        @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  family       Family          @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  owner        FamilyMember?   @relation("CreditCardOwner", fields: [ownerMemberId], references: [id], onDelete: Restrict)
   transactions Transaction[]
+  statements   CardStatement[]
+  payments     Transfer[]      @relation("TransferToCard")
 
   @@unique([familyId, name])
   @@index([familyId])
+  @@index([ownerMemberId])
+}
+
+// ===== 信用卡帳單（每一期一列；同一期只會有一列＝冪等基礎）=====
+model CardStatement {
+  id            String              @id @default(cuid())
+  familyId      String
+  cardId        String
+  periodStart   DateTime?
+  periodEnd     DateTime?
+  statementDate DateTime // 結帳日
+  dueDate       DateTime // 繳款截止日
+  newBalance    Decimal             @db.Decimal(14, 2) // 本期應繳
+  minimumDue    Decimal?            @db.Decimal(14, 2) // 最低應繳
+  paidAmount    Decimal             @default(0) @db.Decimal(14, 2) // 已繳（繳卡費轉帳沖這裡）
+  status        CardStatementStatus @default(OPEN)
+  documentId    String? // 來源文件（P2 Document 表上線後才加 FK）
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  family   Family     @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  card     CreditCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  payments Transfer[] @relation("TransferCardStatement")
+
+  @@unique([cardId, statementDate])
+  @@index([familyId])
+}
+
+enum CardStatementStatus {
+  OPEN
+  PAID
+  PARTIAL
+  OVERDUE
+}
+
+// ===== 負債／借出（BORROWED＝我們欠別人；LENT＝別人欠我們，算資產）=====
+model Liability {
+  id                String             @id @default(cuid())
+  familyId          String
+  ownerMemberId     String? // null＝共同
+  visibility        Visibility         @default(FAMILY_FULL)
+  direction         LiabilityDirection @default(BORROWED)
+  kind              LiabilityKind      @default(OTHER)
+  name              String // 顯示名稱，例如「房貸」「借小明」
+  lender            String? // 貸款銀行／債權人（借出時＝借款人）
+  principal         Decimal            @db.Decimal(14, 2) // 原始本金
+  annualRate        Decimal?           @db.Decimal(7, 4) // 年利率（%）；親友借款可為 null
+  termMonths        Int?
+  startDate         DateTime? // 首次還款日
+  paymentDay        Int? // 每月還款日
+  method            RepaymentMethod    @default(FREE)
+  gracePeriodMonths Int                @default(0)
+  payFromAccountId  String?
+  currentPrincipal  Decimal            @db.Decimal(14, 2) // 剩餘本金（以最近一次對帳值為準）
+  currency          String             @default("TWD")
+  aliases           String[]           @default([])
+  note              String?
+  isArchived        Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  family        Family                @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  owner         FamilyMember?         @relation("LiabilityOwner", fields: [ownerMemberId], references: [id], onDelete: Restrict)
+  payFrom       Account?              @relation("LiabilityPayFrom", fields: [payFromAccountId], references: [id], onDelete: SetNull)
+  rateChanges   LiabilityRateChange[]
+  payments      LiabilityPayment[]
+  transfersFrom Transfer[]            @relation("TransferFromLiability")
+  transfersTo   Transfer[]            @relation("TransferToLiability")
+
+  @@index([familyId])
+  @@index([ownerMemberId])
+}
+
+enum LiabilityDirection {
+  BORROWED
+  LENT
+}
+
+enum LiabilityKind {
+  MORTGAGE // 房貸
+  CAR // 車貸
+  PERSONAL // 信貸
+  FAMILY // 親友借款
+  OTHER
+}
+
+enum RepaymentMethod {
+  EQUAL_PAYMENT // 本息平均
+  EQUAL_PRINCIPAL // 本金平均
+  INTEREST_ONLY // 寬限期只繳息
+  FREE // 無固定（親友）
+}
+
+model LiabilityRateChange {
+  id            String   @id @default(cuid())
+  liabilityId   String
+  effectiveDate DateTime
+  annualRate    Decimal  @db.Decimal(7, 4)
+  createdAt     DateTime @default(now())
+
+  liability Liability @relation(fields: [liabilityId], references: [id], onDelete: Cascade)
+
+  @@index([liabilityId, effectiveDate])
+}
+
+model LiabilityPayment {
+  id            String   @id @default(cuid())
+  liabilityId   String
+  paidAt        DateTime
+  total         Decimal  @db.Decimal(14, 2)
+  principalPart Decimal  @default(0) @db.Decimal(14, 2) // 本金（不是支出）
+  interestPart  Decimal  @default(0) @db.Decimal(14, 2) // 利息（支出）
+  feePart       Decimal  @default(0) @db.Decimal(14, 2) // 帳管費／違約金（支出）
+  transactionId String? // 利息／手續費那筆支出
+  transferId    String? // 本金那筆轉帳
+  createdAt     DateTime @default(now())
+
+  liability Liability @relation(fields: [liabilityId], references: [id], onDelete: Cascade)
+
+  @@index([liabilityId, paidAt])
 }
 
 // ===== 帳戶間轉帳（不計入收支，只移動餘額）=====
 model Transfer {
-  id            String   @id @default(cuid())
-  familyId      String
-  memberId      String
-  fromAccountId String
-  toAccountId   String
-  amount        Decimal  @db.Decimal(12, 2)
-  note          String?
-  transferredAt DateTime
-  createdAt     DateTime @default(now())
+  id                   String          @id @default(cuid())
+  familyId             String
+  memberId             String
+  fromAccountId        String
+  toAccountId          String
+  amount               Decimal         @db.Decimal(12, 2)
+  note                 String?
+  transferredAt        DateTime
+  createdAt            DateTime        @default(now())
+  // ---- 財務中樞 P1-1（只加不改；舊資料＝一般帳戶轉帳、手動、未對帳、未撤銷）----
+  // fromAccountId／toAccountId 目前仍是必填（只加不改）。繳卡費、還貸款這類「目的不是帳戶」的種類，
+  // 要在 P1-4 轉帳引擎把它們放寬成可為 null（DROP NOT NULL，不刪資料）時一起處理。
+  kind                 TransferKind    @default(ACCOUNT)
+  fromLiabilityId      String?
+  toCreditCardId       String?
+  toLiabilityId        String?
+  cardStatementId      String? // CARD_PAYMENT 沖哪一期帳單
+  fee                  Decimal?        @db.Decimal(14, 2) // 手續費（另記一筆支出，見 linkedTransactionIds）
+  source               TransferSource  @default(MANUAL)
+  reconcileStatus      ReconcileStatus @default(UNRECONCILED)
+  linkedTransactionIds String[]        @default([]) // 這次轉帳順帶產生的支出（利息、手續費）
+  undoneAt             DateTime? // 撤銷時間（撤銷不刪資料）
+  undoneByMemberId     String?
 
-  family      Family       @relation(fields: [familyId], references: [id], onDelete: Cascade)
-  member      FamilyMember @relation(fields: [memberId], references: [id])
-  fromAccount Account      @relation("TransferFrom", fields: [fromAccountId], references: [id])
-  toAccount   Account      @relation("TransferTo", fields: [toAccountId], references: [id])
+  family        Family         @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  member        FamilyMember   @relation(fields: [memberId], references: [id])
+  fromAccount   Account        @relation("TransferFrom", fields: [fromAccountId], references: [id])
+  toAccount     Account        @relation("TransferTo", fields: [toAccountId], references: [id])
+  fromLiability Liability?     @relation("TransferFromLiability", fields: [fromLiabilityId], references: [id], onDelete: Restrict)
+  toCreditCard  CreditCard?    @relation("TransferToCard", fields: [toCreditCardId], references: [id], onDelete: Restrict)
+  toLiability   Liability?     @relation("TransferToLiability", fields: [toLiabilityId], references: [id], onDelete: Restrict)
+  cardStatement CardStatement? @relation("TransferCardStatement", fields: [cardStatementId], references: [id], onDelete: SetNull)
 
   @@index([familyId, transferredAt])
+}
+
+enum TransferKind {
+  ACCOUNT // 一般轉帳
+  CARD_PAYMENT // 繳信用卡
+  CASH_WITHDRAW // 提領現金
+  CASH_DEPOSIT // 存入現金
+  TIME_DEPOSIT // 轉定存／定存解約
+  LOAN_REPAY // 還貸款（只放本金）
+  LEND // 借出
+  BORROW // 借入
+  COLLECT // 收回借款
+  SPOUSE // 夫妻之間
+}
+
+enum TransferSource {
+  TEXT
+  MANUAL
+  STATEMENT
+  PASSBOOK
+  EMAIL
+}
+
+enum ReconcileStatus {
+  UNRECONCILED
+  RECONCILED
 }
 
 // ===== 收據圖片 =====
