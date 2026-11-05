@@ -5,7 +5,9 @@ import { getSavingsGoals, createSavingsGoal, updateSavingsGoal, adjustSaved, del
 import { getBudgets, setBudget, getBudgetStatus } from '../services/budget';
 import { getAccountsWithBalances, createAccount, updateAccount } from '../services/account';
 import { getCreditCards, createCreditCard, updateCreditCard } from '../services/creditcard';
-import { createTransfer, undoTransfer, setReconcileStatus, getMonthlyTransfers, getTransferView } from '../services/transfer';
+import { createTransfer, undoTransfer, setReconcileStatus, getMonthlyTransfers, getTransferView, confirmTransfer, rejectTransfer } from '../services/transfer';
+import { getOverview, snapshotMonth } from '../services/net-worth';
+import { isMonth } from '../lib/net-worth';
 import {
   getLiabilities,
   createLiability,
@@ -235,6 +237,45 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     const { member, scope } = ctx(res);
     try {
       return res.json(await setReconcileStatus(member.familyId, member.id, req.params.id, (req.body ?? {}).reconcileStatus, scope));
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  // D18：文字轉帳動到我的個人帳戶 → 我確認才生效／拒絕（LINE 確認卡之外，LIFF 轉帳列表也能按）
+  r.post('/transfers/:id/confirm', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      await confirmTransfer(member.familyId, member.id, req.params.id);
+      return res.json(await getTransferView(member.familyId, req.params.id, scope));
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  r.post('/transfers/:id/reject', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      await rejectTransfer(member.familyId, member.id, req.params.id);
+      return res.json(await getTransferView(member.familyId, req.params.id, scope));
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  // ===== 全貌（P1-7）：淨資產、走勢、資產負債組成、本月現金流、負債還清時間表。數字全部依我的可見範圍由程式算 =====
+  r.get('/overview', async (req, res) => {
+    const { member, scope } = ctx(res);
+    return res.json(await getOverview(member.familyId, scope, resolveMonth(req.query.month)));
+  });
+
+  // 手動重算某個月的快照（全家每人各一份；覆寫）。body: { month: 'YYYY-MM' }，不能是本月或未來
+  r.post('/net-worth/snapshots', async (req, res) => {
+    const { member } = ctx(res);
+    const month = (req.body ?? {}).month;
+    if (!isMonth(month) || month >= currentTaipeiMonth()) return res.status(400).json({ error: 'month must be a past YYYY-MM' });
+    try {
+      return res.json({ month, written: await snapshotMonth(member.familyId, month, { force: true }) });
     } catch (err) {
       return fail(res, err);
     }

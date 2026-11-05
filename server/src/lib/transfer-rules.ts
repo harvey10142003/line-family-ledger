@@ -3,7 +3,7 @@
 //
 // 核心原則：轉帳本身永遠不算收入也不算支出，只移動餘額（帳戶 ↔ 帳戶／卡／負債）。
 // 會另外產生收支的只有：利息（還貸款＝支出；收回借款、定存解約或到期＝收入）與手續費（支出）。
-import type { AccountType, CardStatementStatus, LiabilityDirection, TransferKind } from '@prisma/client';
+import type { AccountType, CardStatementStatus, LiabilityDirection, TransferConfirmStatus, TransferKind, TransferSide } from '@prisma/client';
 
 export const TRANSFER_KINDS: readonly TransferKind[] = [
   'ACCOUNT',
@@ -39,7 +39,11 @@ export class TransferRuleError extends Error {
       | 'exceeds_principal'
       | 'overpay_needs_confirm'
       | 'already_undone'
-      | 'not_creator',
+      | 'not_creator'
+      | 'not_counterpart'
+      | 'not_pending'
+      | 'undo_window_passed'
+      | 'two_counterparts',
     message: string,
     public readonly status: 400 | 403 | 409 = 400,
     public readonly detail?: Record<string, unknown>,
@@ -230,3 +234,24 @@ export function money(v: unknown, field: string, opts: { allowZero?: boolean } =
   }
   return Math.round(n * 100) / 100;
 }
+
+/**
+ * D18：這筆轉帳哪幾端算進帳戶餘額。
+ * - CONFIRMED：兩端都算（舊資料、LIFF 手動、共同帳戶、自己的帳戶）
+ * - PENDING（等對方確認）、REJECTED（對方拒絕）：都不算
+ * - ONE_SIDED（對方 24 小時沒回）：只算建立者自己那一端（對方那端標待確認，不扣不加）
+ */
+export function activeLegs(t: { confirmStatus?: TransferConfirmStatus | null; counterpartSide?: TransferSide | null }): { from: boolean; to: boolean } {
+  switch (t.confirmStatus ?? 'CONFIRMED') {
+    case 'CONFIRMED':
+      return { from: true, to: true };
+    case 'ONE_SIDED':
+      return { from: t.counterpartSide !== 'FROM', to: t.counterpartSide !== 'TO' };
+    default:
+      return { from: false, to: false };
+  }
+}
+
+/** 文字轉帳待確認的期限：24 小時（規格 D18）；文字撤銷窗口也是 24 小時（3.10.3，超過要到 LIFF）。 */
+export const CONFIRM_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const TEXT_UNDO_WINDOW_MS = 24 * 60 * 60 * 1000;

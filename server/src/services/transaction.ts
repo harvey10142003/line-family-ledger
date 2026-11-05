@@ -30,6 +30,12 @@ export async function recordTransaction(params: {
   accountId?: string | null;
   creditCardId?: string | null;
   isShared?: boolean;
+  // ---- 財務中樞 P1-6（文字記帳補強）----
+  bookTo?: 'FAMILY' | 'BUSINESS'; // BUSINESS＝代墊公司費用（報帳狀態自動 PENDING）
+  originalCurrency?: string | null; // 外幣：原幣別＋原幣金額，amount 是預估台幣
+  originalAmount?: number | null;
+  amountEstimated?: boolean;
+  recordedByMemberId?: string | null; // 「幫 Apple 記」：memberId＝Apple，這裡記實際打字的人
 }) {
   const { familyId, memberId, parsed } = params;
 
@@ -59,6 +65,10 @@ export async function recordTransaction(params: {
       accountId: params.accountId ?? null,
       creditCardId: params.creditCardId ?? null,
       isShared: params.isShared ?? true,
+      ...(params.bookTo === 'BUSINESS' ? { bookTo: 'BUSINESS' as const, reimburseStatus: 'PENDING' as const } : {}),
+      ...(params.originalCurrency ? { originalCurrency: params.originalCurrency, originalAmount: params.originalAmount ?? null } : {}),
+      ...(params.amountEstimated ? { amountEstimated: true } : {}),
+      ...(params.recordedByMemberId && params.recordedByMemberId !== memberId ? { recordedByMemberId: params.recordedByMemberId } : {}),
     },
     include: { category: true, member: true, account: true, creditCard: true },
   });
@@ -117,7 +127,7 @@ export async function getTrend(familyId: string, months: number, scope: AccessSc
   const start = new Date(`${list[0]}-01T00:00:00+08:00`);
 
   const txs = await prisma.transaction.findMany({
-    where: { familyId, paidAt: { gte: start } },
+    where: { familyId, paidAt: { gte: start }, bookTo: 'FAMILY' }, // 代墊公司費用不算家庭收支（3.9.1）
     select: { amount: true, paidAt: true, accountId: true, creditCardId: true, category: { select: { type: true } } },
   });
 
@@ -149,7 +159,7 @@ export async function getMonthlySummary(familyId: string, month: string, scope: 
   const { start, end } = monthRange(month);
 
   const txs = await prisma.transaction.findMany({
-    where: { familyId, paidAt: { gte: start, lt: end } },
+    where: { familyId, paidAt: { gte: start, lt: end }, bookTo: 'FAMILY' }, // 代墊公司費用不算家庭支出、分類、預算（3.9.1）
     include: { category: true, member: true },
   });
 
@@ -207,7 +217,7 @@ export async function getSettlement(familyId: string, month: string, scope: Acce
   const [members, txs] = await Promise.all([
     prisma.familyMember.findMany({ where: { familyId } }),
     prisma.transaction.findMany({
-      where: { familyId, paidAt: { gte: start, lt: end } },
+      where: { familyId, paidAt: { gte: start, lt: end }, bookTo: 'FAMILY' }, // 公司費用不分帳
       include: { category: true },
     }),
   ]);
@@ -269,6 +279,8 @@ export async function getMonthlyTransactions(familyId: string, month: string, sc
     orderBy: { paidAt: 'desc' },
   });
   const txs = all.filter((t) => scope.txLevel(t) === 'DETAIL');
+  const members = await prisma.familyMember.findMany({ where: { familyId }, select: { id: true, displayName: true } });
+  const names = new Map(members.map((m) => [m.id, m.displayName]));
 
   return txs.map((t) => ({
     id: t.id,
@@ -287,5 +299,12 @@ export async function getMonthlyTransactions(familyId: string, month: string, sc
     paidAt: t.paidAt.toISOString(),
     source: t.source,
     canEdit: scope.canWriteTx(t),
+    // 財務中樞 P1-6
+    bookTo: t.bookTo,
+    reimburseStatus: t.reimburseStatus,
+    originalCurrency: t.originalCurrency,
+    originalAmount: t.originalAmount == null ? null : Number(t.originalAmount),
+    amountEstimated: t.amountEstimated,
+    recordedByName: t.recordedByMemberId ? names.get(t.recordedByMemberId) ?? null : null,
   }));
 }

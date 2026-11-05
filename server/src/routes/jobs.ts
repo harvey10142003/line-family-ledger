@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders, sendRecordNudges } from '../jobs/reminders';
 import { postDueRecurring } from '../services/recurring';
+import { runMonthlySnapshots } from '../services/net-worth';
+import { notifyExpiredTransfers } from '../jobs/transfer-confirm';
 import { logger } from '../logger';
 
 export const jobsRouter = Router();
@@ -27,6 +29,13 @@ jobsRouter.post('/:task', async (req, res) => {
     }
     if (task === 'recurring') {
       return res.json({ task, ...(await postDueRecurring()) });
+    }
+    if (task === 'net-worth') {
+      const month = typeof req.query.month === 'string' && /^\d{4}-\d{2}$/.test(req.query.month) ? req.query.month : undefined;
+      return res.json({ task, ...(await runMonthlySnapshots(new Date(), month)) });
+    }
+    if (task === 'transfer-expire') {
+      return res.json({ task, ...(await notifyExpiredTransfers()) });
     }
     if (task === 'nudge') {
       return res.json({ task, ...(await sendRecordNudges()) });

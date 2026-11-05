@@ -1,6 +1,7 @@
 import { prisma } from '../prisma';
 import type { AccountType, Visibility } from '@prisma/client';
 import type { AccessLevel, AccessScope } from '../lib/access';
+import { activeLegs } from '../lib/transfer-rules';
 
 // 建立家庭時 / 首次使用帳戶功能時自動套用的預設帳戶
 // 信用卡已獨立為 CreditCard，預設帳戶 = 現金 / 銀行 / 電子錢包
@@ -71,7 +72,7 @@ export async function getAccountsWithBalances(familyId: string, includeArchived:
     }),
     prisma.transfer.findMany({
       where: { familyId, undoneAt: null },
-      select: { fromAccountId: true, toAccountId: true, amount: true },
+      select: { fromAccountId: true, toAccountId: true, amount: true, confirmStatus: true, counterpartSide: true },
     }),
   ]);
 
@@ -83,8 +84,9 @@ export async function getAccountsWithBalances(familyId: string, includeArchived:
   }
   for (const tr of transfers) {
     const amt = Number(tr.amount);
-    if (tr.fromAccountId) delta.set(tr.fromAccountId, (delta.get(tr.fromAccountId) ?? 0) - amt);
-    if (tr.toAccountId) delta.set(tr.toAccountId, (delta.get(tr.toAccountId) ?? 0) + amt);
+    const legs = activeLegs(tr); // D18：待對方確認的不算；對方 24 小時沒回只算建立者那一端
+    if (tr.fromAccountId && legs.from) delta.set(tr.fromAccountId, (delta.get(tr.fromAccountId) ?? 0) - amt);
+    if (tr.toAccountId && legs.to) delta.set(tr.toAccountId, (delta.get(tr.toAccountId) ?? 0) + amt);
   }
 
   return accounts.map((a) => {

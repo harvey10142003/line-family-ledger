@@ -2,6 +2,8 @@ import cron from 'node-cron';
 import { logger } from '../logger';
 import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminders, sendRecordNudges } from './reminders';
 import { postDueRecurring } from '../services/recurring';
+import { runMonthlySnapshots } from '../services/net-worth';
+import { notifyExpiredTransfers } from './transfer-confirm';
 
 const TZ = 'Asia/Taipei';
 
@@ -58,5 +60,23 @@ export function startSchedulers(): void {
     { timezone: TZ },
   );
 
-  logger.info('reminder schedulers started (Asia/Taipei): recurring 08:00, monthly 1st 09:00, weekly Mon 09:00, card due 10:00, nudge 21:00');
+  // 每月 1 號 08:30（台北）存上個月的淨資產快照（P1-7；在 09:00 月報之前）
+  cron.schedule(
+    '30 8 1 * *',
+    () => {
+      runMonthlySnapshots().catch((err) => logger.error({ err }, 'net worth snapshot job failed'));
+    },
+    { timezone: TZ },
+  );
+
+  // 每小時第 5 分：文字轉帳待對方確認超過 24 小時 → 只算建立者那一端，並通知建立者（D18）
+  cron.schedule(
+    '5 * * * *',
+    () => {
+      notifyExpiredTransfers().catch((err) => logger.error({ err }, 'transfer expire job failed'));
+    },
+    { timezone: TZ },
+  );
+
+  logger.info('reminder schedulers started (Asia/Taipei): recurring 08:00, monthly 1st 09:00, weekly Mon 09:00, card due 10:00, nudge 21:00, net worth 1st 08:30, transfer confirm expiry hourly');
 }

@@ -5,6 +5,7 @@ import { buildInviteUrl } from './follow';
 import { confirmPendingBill, cancelPendingBill } from './message-file';
 import { confirmPendingAccount, cancelPendingAccount, confirmPendingCreditCard } from './pending-account';
 import { handleQuickFix } from './quick-fix';
+import { handleLedgerPostback } from './text-ledger';
 import { logger } from '../../logger';
 
 // 暫存使用者狀態：等待輸入家庭名稱 / 家庭碼
@@ -26,6 +27,9 @@ export async function handlePostback(event: PostbackEvent): Promise<void> {
 
   const params = new URLSearchParams(event.postback.data);
   const action = params.get('action');
+
+  // 文字記帳的候選選擇（lp_*）與轉帳確認卡（tr_*：撤銷、改帳戶、改金額、對方確認／拒絕）
+  if (action && (await handleLedgerPostback(userId, event.replyToken, action, params))) return;
 
   switch (action) {
     case 'create_family':

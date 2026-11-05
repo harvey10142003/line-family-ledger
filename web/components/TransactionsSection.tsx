@@ -19,6 +19,12 @@ type TxItem = {
   accountName: string | null;
   accountIcon: string | null;
   paidAt: string;
+  // 財務中樞 P1-6：公司費用、外幣、幫別人記
+  bookTo?: 'FAMILY' | 'BUSINESS';
+  originalCurrency?: string | null;
+  originalAmount?: number | null;
+  amountEstimated?: boolean;
+  recordedByName?: string | null;
   canEdit?: boolean; // D10：記在家人個人帳戶上的只能看
 };
 
@@ -218,12 +224,20 @@ export default function TransactionsSection({
                     <p className="truncate text-sm">
                       {t.categoryIcon ?? ''} {t.note || t.categoryName}
                       {t.type === 'EXPENSE' && !t.isShared && <span className="ml-1 rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-500">個人</span>}
+                      {t.bookTo === 'BUSINESS' && <span className="ml-1 rounded bg-amber-50 px-1 py-0.5 text-[10px] text-amber-700">公司代墊</span>}
                     </p>
                     <p className="text-xs text-gray-400">
                       {t.paidAt.slice(5, 10)}　{t.memberName}
                       {t.accountName ? `　${t.accountIcon ?? ''}${t.accountName}` : ''}
+                      {t.recordedByName ? `　${t.recordedByName} 代記` : ''}
                       {t.canEdit === false && '　僅本人可修改'}
                     </p>
+                    {t.originalCurrency && (
+                      <p className="text-[11px] text-gray-400">
+                        原幣 {t.originalCurrency} {t.originalAmount}
+                        {t.amountEstimated ? '（台幣為參考匯率預估）' : ''}
+                      </p>
+                    )}
                   </div>
                   <span className={`shrink-0 pl-2 font-medium ${t.type === 'INCOME' ? 'text-emerald-500' : 'text-gray-800'}`}>
                     {t.type === 'INCOME' ? '+' : '-'}{ntd(t.amount)}

@@ -8,23 +8,25 @@
 // 權限（AccessScope，D10）：錢從哪裡出去，那一端就要「能改」（共同或本人的）；
 // 錢進去的那一端只要看得到即可（同舊版轉帳規則）——但若連帶的收支要記在那個帳戶上，那個帳戶也要能改。
 // 規則（組合、連帶收支、帳單狀態）全部在 lib/transfer-rules.ts。
-import type { Prisma, ReconcileStatus, TransferKind, TransferSource } from '@prisma/client';
+import type { Prisma, ReconcileStatus, TransferKind, TransferSide, TransferSource } from '@prisma/client';
 import { prisma } from '../prisma';
 import { AccessError, type AccessScope } from '../lib/access';
 import {
   checkShape,
   checkSplit,
+  CONFIRM_WINDOW_MS,
   isTransferKind,
   liabilityEffect,
   linkedEntries,
   LINKED_CATEGORY,
   money,
   statementStatus,
+  TEXT_UNDO_WINDOW_MS,
   TransferRuleError,
   type Endpoint,
   type LinkedEntry,
 } from '../lib/transfer-rules';
-import { taipeiNoon } from '../lib/time-tw';
+import { taipeiNoon, ymdTaipei } from '../lib/time-tw';
 import { HIDDEN_ACCOUNT_NAME } from './transaction';
 
 type Tx = Prisma.TransactionClient;
@@ -133,7 +135,135 @@ async function applyLiability(tx: Tx, liabilityId: string, current: number, prin
   }
 }
 
-export async function createTransfer(familyId: string, memberId: string, input: CreateTransferInput, scope: AccessScope, now: Date = new Date()) {
+export type CreateTransferOptions = {
+  /**
+   * D18（文字轉帳）：來源或目的是「別人的個人帳戶／卡／負債」時不直接動，先記成待對方確認（PENDING），
+   * 對方在 LINE 按確認才生效。沒開這個選項（LIFF 手動）＝舊規則：別人的帳戶不能當來源（403）、可以當目的。
+   */
+  counterpartConfirm?: boolean;
+};
+
+type Effects = {
+  statement: Awaited<ReturnType<typeof bumpStatement>> | null;
+  linkedIds: string[];
+  liabilityId: string | null;
+};
+
+/**
+ * 轉帳真的「動錢」的部分：連帶收支（利息、手續費）、沖信用卡帳單、負債剩餘本金。
+ * 建立（已生效）與對方確認（D18）共用這一段，規則只有一份。
+ */
+async function applyEffects(
+  tx: Tx,
+  p: {
+    familyId: string;
+    memberId: string;
+    kind: TransferKind;
+    from: Endpoint;
+    to: Endpoint;
+    amount: number;
+    interest: number;
+    fee: number;
+    transferredAt: Date;
+    source: TransferSource;
+    cardStatementId: string | null;
+    confirmOverpay: boolean;
+    now: Date;
+  },
+): Promise<Effects> {
+  const { familyId, kind, from, to, amount } = p;
+  const linked = linkedEntries(kind, from, to, { interest: p.interest, fee: p.fee });
+  const accOwner = new Map<string, string | null>();
+  for (const e of [from, to]) if (e.type === 'ACCOUNT') accOwner.set(e.id, e.ownerMemberId);
+  const linkedIds: string[] = [];
+  for (const e of linked) {
+    const t = await tx.transaction.create({
+      data: {
+        familyId,
+        memberId: p.memberId,
+        categoryId: await categoryFor(tx, familyId, e.role),
+        accountId: e.accountId,
+        amount: e.amount,
+        note: `${KIND_LABEL[kind]}${ROLE_LABEL[e.role]}`,
+        paidAt: p.transferredAt,
+        isShared: (accOwner.get(e.accountId) ?? null) == null,
+        source: p.source === 'TEXT' ? 'TEXT' : 'MANUAL',
+      },
+    });
+    linkedIds.push(t.id);
+  }
+
+  let statement: Effects['statement'] = null;
+  if (kind === 'CARD_PAYMENT') {
+    const s = await pickStatement(tx, familyId, to.id, p.cardStatementId);
+    if (s) {
+      statement = await bumpStatement(tx, s.id, amount, p.now);
+      if (statement.overpaid > 0 && !p.confirmOverpay) {
+        throw new TransferRuleError('overpay_needs_confirm', `本期應繳 ${statement.newBalance}，這次會溢繳 ${statement.overpaid}`, 409, {
+          cardStatementId: s.id,
+          newBalance: statement.newBalance,
+          paidBefore: r2(statement.paidAmount - amount),
+          overpaid: statement.overpaid,
+        });
+      }
+    }
+  }
+
+  const eff = liabilityEffect(kind, amount);
+  const liabilityId = eff ? (eff.side === 'to' ? to.id : from.id) : null;
+  if (eff && liabilityId) await applyLiability(tx, liabilityId, eff.current, eff.principalToo);
+  return { statement, linkedIds, liabilityId };
+}
+
+async function recordLiabilityPayment(
+  tx: Tx,
+  kind: TransferKind,
+  liabilityId: string | null,
+  transferId: string,
+  p: { transferredAt: Date; amount: number; interest: number; fee: number; linkedIds: string[] },
+) {
+  if ((kind === 'LOAN_REPAY' || kind === 'COLLECT') && liabilityId) {
+    await tx.liabilityPayment.create({
+      data: {
+        liabilityId,
+        paidAt: p.transferredAt,
+        total: r2(p.amount + p.interest + p.fee),
+        principalPart: p.amount,
+        interestPart: p.interest,
+        feePart: p.fee,
+        transactionId: p.linkedIds[0] ?? null,
+        transferId,
+      },
+    });
+  }
+}
+
+/** D18：這筆轉帳有沒有動到「別人」的個人帳戶／卡／負債；有的話是誰、哪一端。兩端都是別人的 → 不收。 */
+function counterpartOf(
+  scope: AccessScope,
+  memberId: string,
+  ends: { from: { accountId: string | null; liabilityId: string | null }; to: { accountId: string | null; creditCardId: string | null; liabilityId: string | null } },
+): { memberId: string; side: TransferSide } | null {
+  const owner = (e: { accountId?: string | null; creditCardId?: string | null; liabilityId?: string | null }) =>
+    (e.accountId ? scope.account(e.accountId) : e.creditCardId ? scope.card(e.creditCardId) : e.liabilityId ? scope.liability(e.liabilityId) : undefined)?.ownerMemberId ?? null;
+  const fo = owner(ends.from);
+  const tOwner = owner(ends.to);
+  const fromOther = fo && fo !== memberId ? fo : null;
+  const toOther = tOwner && tOwner !== memberId ? tOwner : null;
+  if (fromOther && toOther) throw new TransferRuleError('two_counterparts', '兩端都是別人的個人帳戶，請由本人記這筆', 403);
+  if (fromOther) return { memberId: fromOther, side: 'FROM' };
+  if (toOther) return { memberId: toOther, side: 'TO' };
+  return null;
+}
+
+export async function createTransfer(
+  familyId: string,
+  memberId: string,
+  input: CreateTransferInput,
+  scope: AccessScope,
+  now: Date = new Date(),
+  opts: CreateTransferOptions = {},
+) {
   const kind: TransferKind = input.kind === undefined || input.kind === null ? 'ACCOUNT' : isTransferKind(input.kind) ? input.kind : (() => {
     throw new TransferRuleError('invalid_kind', `unknown kind ${String(input.kind)}`);
   })();
@@ -161,10 +291,25 @@ export async function createTransfer(familyId: string, memberId: string, input: 
     throw new TransferRuleError('invalid_shape', 'give either an existing liability or newLiability');
   }
 
+  // ---- D18：文字轉帳動到別人的個人帳戶 → 待對方確認（那一端只要看得到；自己這端照一般規則）----
+  const counterpart = opts.counterpartConfirm
+    ? counterpartOf(scope, memberId, {
+        from: { accountId: fromAccountId, liabilityId: fromLiabilityId },
+        to: { accountId: toAccountId, creditCardId: toCreditCardId, liabilityId: toLiabilityId },
+      })
+    : null;
+
   return prisma.$transaction(async (tx) => {
     // ---- 權限：先檢查（看不到的回 404，不透露存在；不能動的回 403）----
-    if (fromAccountId) scope.assertAccountWritable(fromAccountId);
-    if (fromLiabilityId) scope.assertLiabilityWritable(fromLiabilityId);
+    const theirs = (side: TransferSide) => counterpart?.side === side;
+    if (fromAccountId) {
+      if (theirs('FROM')) scope.assertAccountTargetable(fromAccountId);
+      else scope.assertAccountWritable(fromAccountId);
+    }
+    if (fromLiabilityId) {
+      if (theirs('FROM')) scope.assertLiabilityTargetable(fromLiabilityId);
+      else scope.assertLiabilityWritable(fromLiabilityId);
+    }
     if (toCreditCardId) scope.assertCardTargetable(toCreditCardId);
     if (toLiabilityId) scope.assertLiabilityTargetable(toLiabilityId);
     if (toAccountId) scope.assertAccountTargetable(toAccountId);
@@ -204,110 +349,179 @@ export async function createTransfer(familyId: string, memberId: string, input: 
     checkShape(kind, from, to);
 
     const linked = linkedEntries(kind, from!, to!, { interest, fee });
-    // 連帶收支要記在帳戶上：那個帳戶也必須能改（D10：不能在對方的個人帳戶上記支出）
-    for (const e of linked) scope.assertAccountWritable(e.accountId);
-
-    // ---- 連帶收支（利息、手續費）：一般交易，會算進收支 ----
-    const accOwner = new Map<string, string | null>();
-    for (const e of [from, to]) if (e?.type === 'ACCOUNT') accOwner.set(e.id, e.ownerMemberId);
-    const linkedIds: string[] = [];
+    // 連帶收支要記在帳戶上：那個帳戶也必須能改（D10：不能在對方的個人帳戶上記支出）——
+    // 待確認的轉帳要等對方按確認才記，記在對方帳戶上的那筆由對方的確認授權。
     for (const e of linked) {
-      const t = await tx.transaction.create({
+      const onTheirs = !!counterpart && ((counterpart.side === 'FROM' && e.accountId === fromAccountId) || (counterpart.side === 'TO' && e.accountId === toAccountId));
+      if (!onTheirs) scope.assertAccountWritable(e.accountId);
+    }
+
+    const base = {
+      familyId,
+      memberId,
+      kind,
+      fromAccountId: from?.type === 'ACCOUNT' ? from.id : null,
+      fromLiabilityId: from?.type === 'LIABILITY' ? from.id : null,
+      toAccountId: to?.type === 'ACCOUNT' ? to.id : null,
+      toCreditCardId: to?.type === 'CARD' ? to.id : null,
+      toLiabilityId: to?.type === 'LIABILITY' ? to.id : null,
+      amount,
+      fee: fee > 0 ? fee : null,
+      interest: interest > 0 ? interest : null,
+      note: str(input.note),
+      transferredAt,
+      source,
+      createdAt: now, // 24 小時撤銷窗口、待確認期限都以這個時間起算
+    };
+
+    if (counterpart) {
+      // 待確認：什麼都不動（餘額、帳單、負債、連帶收支都等對方確認）；繳卡費沖哪一期也等確認時再挑
+      const tr = await tx.transfer.create({
         data: {
-          familyId,
-          memberId,
-          categoryId: await categoryFor(tx, familyId, e.role),
-          accountId: e.accountId,
-          amount: e.amount,
-          note: `${KIND_LABEL[kind]}${ROLE_LABEL[e.role]}`,
-          paidAt: transferredAt,
-          isShared: (accOwner.get(e.accountId) ?? null) == null,
-          source: source === 'TEXT' ? 'TEXT' : 'MANUAL',
+          ...base,
+          cardStatementId: str(input.cardStatementId),
+          confirmStatus: 'PENDING',
+          counterpartMemberId: counterpart.memberId,
+          counterpartSide: counterpart.side,
+          confirmDeadline: new Date(now.getTime() + CONFIRM_WINDOW_MS),
         },
       });
-      linkedIds.push(t.id);
+      return { transfer: tr, statement: null, linkedTransactionIds: [] as string[], liabilityId: null as string | null, pending: true };
     }
 
-    // ---- 信用卡帳單：沖該期（全額→PAID、部分→PARTIAL、溢繳要確認）----
-    let statement: Awaited<ReturnType<typeof bumpStatement>> | null = null;
-    if (kind === 'CARD_PAYMENT') {
-      const s = await pickStatement(tx, familyId, to!.id, str(input.cardStatementId));
-      if (s) {
-        statement = await bumpStatement(tx, s.id, amount, now);
-        if (statement.overpaid > 0 && input.confirmOverpay !== true) {
-          throw new TransferRuleError('overpay_needs_confirm', `本期應繳 ${statement.newBalance}，這次會溢繳 ${statement.overpaid}`, 409, {
-            cardStatementId: s.id,
-            newBalance: statement.newBalance,
-            paidBefore: r2(statement.paidAmount - amount),
-            overpaid: statement.overpaid,
-          });
-        }
-      }
-    }
-
-    // ---- 負債剩餘本金 ----
-    const eff = liabilityEffect(kind, amount);
-    const liabilityId = eff ? (eff.side === 'to' ? to!.id : from!.id) : null;
-    if (eff && liabilityId) await applyLiability(tx, liabilityId, eff.current, eff.principalToo);
-
-    const tr = await tx.transfer.create({
-      data: {
-        familyId,
-        memberId,
-        kind,
-        fromAccountId: from?.type === 'ACCOUNT' ? from.id : null,
-        fromLiabilityId: from?.type === 'LIABILITY' ? from.id : null,
-        toAccountId: to?.type === 'ACCOUNT' ? to.id : null,
-        toCreditCardId: to?.type === 'CARD' ? to.id : null,
-        toLiabilityId: to?.type === 'LIABILITY' ? to.id : null,
-        cardStatementId: statement?.id ?? null,
-        amount,
-        fee: fee > 0 ? fee : null,
-        interest: interest > 0 ? interest : null,
-        note: str(input.note),
-        transferredAt,
-        source,
-        linkedTransactionIds: linkedIds,
-      },
+    const effects = await applyEffects(tx, {
+      familyId,
+      memberId,
+      kind,
+      from: from!,
+      to: to!,
+      amount,
+      interest,
+      fee,
+      transferredAt,
+      source,
+      cardStatementId: str(input.cardStatementId),
+      confirmOverpay: input.confirmOverpay === true,
+      now,
     });
-
-    // ---- 還款紀錄（還貸款、收回借款）：本金／利息／手續費拆開記 ----
-    if ((kind === 'LOAN_REPAY' || kind === 'COLLECT') && liabilityId) {
-      await tx.liabilityPayment.create({
-        data: {
-          liabilityId,
-          paidAt: transferredAt,
-          total: r2(amount + interest + fee),
-          principalPart: amount,
-          interestPart: interest,
-          feePart: fee,
-          transactionId: linkedIds[0] ?? null,
-          transferId: tr.id,
-        },
-      });
-    }
-
-    return { transfer: tr, statement, linkedTransactionIds: linkedIds, liabilityId };
+    const tr = await tx.transfer.create({ data: { ...base, cardStatementId: effects.statement?.id ?? null, linkedTransactionIds: effects.linkedIds } });
+    await recordLiabilityPayment(tx, kind, effects.liabilityId, tr.id, { transferredAt, amount, interest, fee, linkedIds: effects.linkedIds });
+    return { transfer: tr, statement: effects.statement, linkedTransactionIds: effects.linkedIds, liabilityId: effects.liabilityId, pending: false };
   });
 }
 
-/** 撤銷：只有建立者能按；不刪轉帳，標 undoneAt，並把餘額、帳單、負債、連帶收支全部還原。 */
-export async function undoTransfer(familyId: string, memberId: string, id: string, scope: AccessScope, now: Date = new Date()) {
+async function endpointsOf(
+  tx: Tx,
+  familyId: string,
+  tr: { fromAccountId: string | null; fromLiabilityId: string | null; toAccountId: string | null; toCreditCardId: string | null; toLiabilityId: string | null },
+) {
+  const from = tr.fromAccountId ? await loadAccount(tx, familyId, tr.fromAccountId) : tr.fromLiabilityId ? await loadLiability(tx, familyId, tr.fromLiabilityId) : null;
+  let to: Endpoint | null = null;
+  if (tr.toAccountId) to = await loadAccount(tx, familyId, tr.toAccountId);
+  else if (tr.toCreditCardId) to = { type: 'CARD', id: tr.toCreditCardId };
+  else if (tr.toLiabilityId) to = await loadLiability(tx, familyId, tr.toLiabilityId);
+  if (!from || !to) throw new TransferRuleError('invalid_shape', 'transfer endpoints missing');
+  return { from, to };
+}
+
+/** D18：被動到個人帳戶的那位按「確認」→ 才真的動錢（同一般建立：連帶收支、沖帳單、負債本金）。 */
+export async function confirmTransfer(familyId: string, memberId: string, id: string, now: Date = new Date()) {
+  const tr = await prisma.transfer.findFirst({ where: { id, familyId } });
+  if (!tr) throw new AccessError(404, 'not_found', 'transfer not found');
+  if (tr.counterpartMemberId !== memberId) throw new TransferRuleError('not_counterpart', 'only the member whose account is involved can confirm', 403);
+  if (tr.undoneAt) throw new TransferRuleError('already_undone', '這筆已經被撤銷了', 409);
+  if (tr.confirmStatus !== 'PENDING' && tr.confirmStatus !== 'ONE_SIDED') {
+    throw new TransferRuleError('not_pending', tr.confirmStatus === 'CONFIRMED' ? '這筆已經確認過了' : '這筆已經拒絕了', 409);
+  }
+  return prisma.$transaction(async (tx) => {
+    const r = await tx.transfer.updateMany({
+      where: { id, undoneAt: null, confirmStatus: { in: ['PENDING', 'ONE_SIDED'] } },
+      data: { confirmStatus: 'CONFIRMED', confirmedAt: now },
+    });
+    if (r.count === 0) throw new TransferRuleError('not_pending', '這筆已經處理過了', 409);
+    const { from, to } = await endpointsOf(tx, familyId, tr);
+    const amount = n(tr.amount);
+    const interest = n(tr.interest);
+    const fee = n(tr.fee);
+    const effects = await applyEffects(tx, {
+      familyId,
+      memberId: tr.memberId,
+      kind: tr.kind,
+      from,
+      to,
+      amount,
+      interest,
+      fee,
+      transferredAt: tr.transferredAt,
+      source: tr.source,
+      cardStatementId: tr.cardStatementId,
+      confirmOverpay: true, // 對方看過金額才按確認
+      now,
+    });
+    const updated = await tx.transfer.update({ where: { id }, data: { cardStatementId: effects.statement?.id ?? null, linkedTransactionIds: effects.linkedIds } });
+    await recordLiabilityPayment(tx, tr.kind, effects.liabilityId, id, { transferredAt: tr.transferredAt, amount, interest, fee, linkedIds: effects.linkedIds });
+    return { transfer: updated, statement: effects.statement };
+  });
+}
+
+/** D18：對方按「拒絕」→ 這筆不生效（紀錄留著）。ONE_SIDED 已算進建立者那一端的也一起不算。 */
+export async function rejectTransfer(familyId: string, memberId: string, id: string, now: Date = new Date()) {
+  const tr = await prisma.transfer.findFirst({ where: { id, familyId } });
+  if (!tr) throw new AccessError(404, 'not_found', 'transfer not found');
+  if (tr.counterpartMemberId !== memberId) throw new TransferRuleError('not_counterpart', 'only the member whose account is involved can reject', 403);
+  const r = await prisma.transfer.updateMany({
+    where: { id, undoneAt: null, confirmStatus: { in: ['PENDING', 'ONE_SIDED'] } },
+    data: { confirmStatus: 'REJECTED', rejectedAt: now },
+  });
+  if (r.count === 0) throw new TransferRuleError('not_pending', '這筆已經處理過了', 409);
+  return prisma.transfer.findUniqueOrThrow({ where: { id } });
+}
+
+/**
+ * D18：建立 24 小時後對方還沒回 → ONE_SIDED：只算建立者這一端（例如 Shark 的收入側），標「待確認」；
+ * 對方之後仍可確認（兩端都生效）或拒絕。回傳這次轉成 ONE_SIDED 的轉帳（給排程通知建立者）。
+ */
+export async function expirePendingTransfers(now: Date = new Date()) {
+  const due = await prisma.transfer.findMany({
+    where: { confirmStatus: 'PENDING', undoneAt: null, confirmDeadline: { lte: now } },
+    select: { id: true },
+  });
+  const ids: string[] = [];
+  for (const d of due) {
+    const r = await prisma.transfer.updateMany({ where: { id: d.id, confirmStatus: 'PENDING', undoneAt: null }, data: { confirmStatus: 'ONE_SIDED' } });
+    if (r.count) ids.push(d.id);
+  }
+  if (ids.length === 0) return [];
+  return prisma.transfer.findMany({ where: { id: { in: ids } }, include: { ...listInclude, member: { select: { displayName: true, lineUserId: true } } } });
+}
+
+/**
+ * 撤銷：只有建立者能按；不刪轉帳，標 undoneAt，並把餘額、帳單、負債、連帶收支全部還原。
+ * opts.withinMs：LINE 確認卡上的一鍵撤銷只在建立後 24 小時內有效（超過要到 LIFF，3.10.3）。
+ * 還沒生效的（待對方確認、對方拒絕、只算一邊）沒有帳單／負債／連帶收支要還原，只標 undoneAt。
+ */
+export async function undoTransfer(familyId: string, memberId: string, id: string, scope: AccessScope, now: Date = new Date(), opts: { withinMs?: number } = {}) {
   const tr = await prisma.transfer.findFirst({ where: { id, familyId } });
   if (!tr || !scope.transferView(tr).visible) throw new AccessError(404, 'not_found', 'transfer not found');
   if (tr.memberId !== memberId) throw new TransferRuleError('not_creator', 'only the member who created this transfer can undo it', 403);
   if (tr.undoneAt) throw new TransferRuleError('already_undone', 'transfer already undone', 409);
+  if (opts.withinMs != null && now.getTime() - tr.createdAt.getTime() > opts.withinMs) {
+    throw new TransferRuleError('undo_window_passed', '超過 24 小時，請到記帳簿撤銷', 403);
+  }
 
   return prisma.$transaction(async (tx) => {
     const r = await tx.transfer.updateMany({ where: { id, undoneAt: null }, data: { undoneAt: now, undoneByMemberId: memberId } });
     if (r.count === 0) throw new TransferRuleError('already_undone', 'transfer already undone', 409);
-    if (tr.linkedTransactionIds.length) {
-      await tx.transaction.deleteMany({ where: { familyId, id: { in: tr.linkedTransactionIds } } });
+    // 確認狀態以鎖住後的那一列為準（同時有人按確認時不會漏還原）
+    const cur = await tx.transfer.findUniqueOrThrow({ where: { id } });
+    if (cur.confirmStatus !== 'CONFIRMED') return { id, undoneAt: now.toISOString(), statement: null };
+    if (cur.linkedTransactionIds.length) {
+      await tx.transaction.deleteMany({ where: { familyId, id: { in: cur.linkedTransactionIds } } });
     }
     let statement: Awaited<ReturnType<typeof bumpStatement>> | null = null;
-    if (tr.cardStatementId) statement = await bumpStatement(tx, tr.cardStatementId, -n(tr.amount), now);
-    const eff = liabilityEffect(tr.kind, n(tr.amount));
-    const liabilityId = eff ? (eff.side === 'to' ? tr.toLiabilityId : tr.fromLiabilityId) : null;
+    if (cur.cardStatementId) statement = await bumpStatement(tx, cur.cardStatementId, -n(cur.amount), now);
+    const eff = liabilityEffect(cur.kind, n(cur.amount));
+    const liabilityId = eff ? (eff.side === 'to' ? cur.toLiabilityId : cur.fromLiabilityId) : null;
     if (eff && liabilityId) {
       await tx.liability.update({
         where: { id: liabilityId },
@@ -320,6 +534,77 @@ export async function undoTransfer(familyId: string, memberId: string, id: strin
     await tx.liabilityPayment.updateMany({ where: { transferId: id, undoneAt: null }, data: { undoneAt: now } });
     return { id, undoneAt: now.toISOString(), statement };
   });
+}
+
+/**
+ * 確認卡上的「改帳戶」「改金額」：用新的內容另建一筆（同一個出口 createTransfer），成功後才撤銷舊的。
+ * 只有建立者、24 小時內可以改（同一鍵撤銷）。新建失敗 → 舊的維持不動。
+ */
+export async function replaceTransfer(
+  familyId: string,
+  memberId: string,
+  id: string,
+  changes: { amount?: number; fromAccountId?: string; toAccountId?: string; toCreditCardId?: string; confirmOverpay?: boolean },
+  scope: AccessScope,
+  now: Date = new Date(),
+) {
+  const tr = await prisma.transfer.findFirst({ where: { id, familyId } });
+  if (!tr || !scope.transferView(tr).visible) throw new AccessError(404, 'not_found', 'transfer not found');
+  if (tr.memberId !== memberId) throw new TransferRuleError('not_creator', 'only the member who created this transfer can change it', 403);
+  if (tr.undoneAt) throw new TransferRuleError('already_undone', 'transfer already undone', 409);
+  if (now.getTime() - tr.createdAt.getTime() > TEXT_UNDO_WINDOW_MS) throw new TransferRuleError('undo_window_passed', '超過 24 小時，請到記帳簿修改', 403);
+  const newTo = changes.toAccountId || changes.toCreditCardId;
+  let kind: TransferKind = tr.kind;
+  if (changes.toCreditCardId && kind === 'ACCOUNT') kind = 'CARD_PAYMENT';
+  if (changes.toAccountId && kind === 'CARD_PAYMENT') kind = 'ACCOUNT';
+  const input: CreateTransferInput = {
+    kind,
+    fromAccountId: changes.fromAccountId ?? tr.fromAccountId,
+    fromLiabilityId: changes.fromAccountId ? null : tr.fromLiabilityId,
+    toAccountId: newTo ? (changes.toAccountId ?? null) : tr.toAccountId,
+    toCreditCardId: newTo ? (changes.toCreditCardId ?? null) : tr.toCreditCardId,
+    toLiabilityId: newTo ? null : tr.toLiabilityId,
+    amount: changes.amount ?? n(tr.amount),
+    interest: tr.interest == null ? undefined : n(tr.interest),
+    fee: tr.fee == null ? undefined : n(tr.fee),
+    note: tr.note,
+    transferredAt: ymdTaipei(tr.transferredAt),
+    source: tr.source,
+    confirmOverpay: changes.confirmOverpay === true,
+  };
+  if ((kind === 'SPOUSE' || kind === 'ACCOUNT') && input.fromAccountId && input.toAccountId) {
+    // 改了帳戶後兩端不一定還是兩位成員的個人帳戶：先換成合適的種類再交給組合檢查
+    const fo = scope.account(String(input.fromAccountId))?.ownerMemberId ?? null;
+    const tOwner = scope.account(String(input.toAccountId))?.ownerMemberId ?? null;
+    input.kind = fo && tOwner && fo !== tOwner ? 'SPOUSE' : 'ACCOUNT';
+  }
+  // 先撤銷舊的（帳單已繳、負債本金先還原，新的那筆才會沖到同一期、本金檢查才正確），再用新內容建；
+  // 新的建不起來（例如超過剩餘本金）→ 用舊內容原樣補回一筆，並把錯誤丟回去。
+  const original: CreateTransferInput = {
+    kind: tr.kind,
+    fromAccountId: tr.fromAccountId,
+    fromLiabilityId: tr.fromLiabilityId,
+    toAccountId: tr.toAccountId,
+    toCreditCardId: tr.toCreditCardId,
+    toLiabilityId: tr.toLiabilityId,
+    cardStatementId: tr.cardStatementId,
+    amount: n(tr.amount),
+    interest: input.interest,
+    fee: input.fee,
+    note: tr.note,
+    transferredAt: input.transferredAt,
+    source: tr.source,
+    confirmOverpay: true,
+  };
+  if (tr.kind === 'CARD_PAYMENT' && input.kind === 'CARD_PAYMENT' && input.toCreditCardId === tr.toCreditCardId) input.cardStatementId = tr.cardStatementId;
+  const counterpartConfirm = tr.source === 'TEXT';
+  await undoTransfer(familyId, memberId, id, scope, now);
+  try {
+    return await createTransfer(familyId, memberId, input, scope, now, { counterpartConfirm });
+  } catch (err) {
+    await createTransfer(familyId, memberId, original, scope, now, { counterpartConfirm }).catch(() => undefined);
+    throw err;
+  }
 }
 
 /** 對帳狀態（跟對帳單對上了沒）：看得到明細、而且是建立者或能動其中一端的人才能改。 */
@@ -350,7 +635,7 @@ const listInclude = {
 
 type ListRow = Prisma.TransferGetPayload<{ include: typeof listInclude }>;
 
-function describe(t: ListRow, scope: AccessScope, memberId: string) {
+function describe(t: ListRow, scope: AccessScope, memberId: string, names: Map<string, string> = new Map()) {
   const v = scope.transferView(t);
   const fromName = t.fromAccount?.name ?? t.fromLiability?.name ?? '';
   const toName = t.toAccount?.name ?? t.toCreditCard?.name ?? t.toLiability?.name ?? '';
@@ -371,6 +656,11 @@ function describe(t: ListRow, scope: AccessScope, memberId: string) {
     undone: !!t.undoneAt,
     undoneAt: t.undoneAt?.toISOString() ?? null,
     canUndo: !t.undoneAt && t.memberId === memberId,
+    // D18：待對方確認
+    confirmStatus: t.confirmStatus,
+    counterpartName: t.counterpartMemberId ? names.get(t.counterpartMemberId) ?? null : null,
+    confirmDeadline: t.confirmDeadline?.toISOString() ?? null,
+    canConfirm: !t.undoneAt && t.counterpartMemberId === memberId && (t.confirmStatus === 'PENDING' || t.confirmStatus === 'ONE_SIDED'),
   };
 }
 
@@ -390,11 +680,17 @@ export async function getMonthlyTransfers(familyId: string, month: string, scope
     include: listInclude,
     orderBy: { transferredAt: 'desc' },
   });
-  return rows.filter((t) => scope.transferView(t).visible).map((t) => describe(t, scope, scope.memberId));
+  const names = await memberNames(familyId);
+  return rows.filter((t) => scope.transferView(t).visible).map((t) => describe(t, scope, scope.memberId, names));
 }
 
 export async function getTransferView(familyId: string, id: string, scope: AccessScope) {
   const t = await prisma.transfer.findFirst({ where: { id, familyId }, include: listInclude });
   if (!t || !scope.transferView(t).visible) throw new AccessError(404, 'not_found', 'transfer not found');
-  return describe(t, scope, scope.memberId);
+  return describe(t, scope, scope.memberId, await memberNames(familyId));
+}
+
+async function memberNames(familyId: string): Promise<Map<string, string>> {
+  const ms = await prisma.familyMember.findMany({ where: { familyId }, select: { id: true, displayName: true } });
+  return new Map(ms.map((m) => [m.id, m.displayName]));
 }

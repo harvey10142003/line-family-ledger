@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import type React from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { initLiff, getProfile } from '@/lib/liff';
 import { apiGet, apiDownload } from '@/lib/api';
@@ -13,6 +14,7 @@ import TrendChart from '@/components/TrendChart';
 import GoalsSection from '@/components/GoalsSection';
 import TransfersSection, { type TransferKind, type TransferPreset } from '@/components/TransfersSection';
 import LiabilitiesSection from '@/components/LiabilitiesSection';
+import NetWorthSection from '@/components/NetWorthSection';
 
 type MeResp =
   | { joined: false }
@@ -32,11 +34,20 @@ type Settlement = {
   transfers: { fromName: string; toName: string; amount: number }[];
 };
 
-type Tab = 'overview' | 'tx' | 'accounts' | 'more';
+type Tab = 'overview' | 'hub' | 'tx' | 'accounts' | 'more';
 
 const PIE_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#14b8a6', '#a855f7', '#64748b'];
-const TABS: { key: Tab; label: string; icon: string }[] = [
+// 全貌分頁用線條圖示（新功能不放 emoji）
+const HubIcon = () => (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="inline-block">
+    <path d="M3 3v18h18" />
+    <path d="M7 15l4-4 3 3 5-6" />
+  </svg>
+);
+
+const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
   { key: 'overview', label: '總覽', icon: '📊' },
+  { key: 'hub', label: '全貌', icon: <HubIcon /> },
   { key: 'tx', label: '明細', icon: '📝' },
   { key: 'accounts', label: '帳戶', icon: '💳' },
   { key: 'more', label: '更多', icon: '⚙️' },
@@ -120,7 +131,7 @@ export default function Home() {
 
   const expenseCats = summary?.byCategory.filter((c) => c.type === 'EXPENSE') ?? [];
   const totalExpense = summary?.totalExpense ?? 0;
-  const showMonthBar = tab === 'overview' || tab === 'tx';
+  const showMonthBar = tab === 'overview' || tab === 'tx' || tab === 'hub';
 
   return (
     <div className="min-h-screen bg-gray-50 pb-20 md:pb-6">
@@ -247,6 +258,9 @@ export default function Home() {
             )}
           </>
         )}
+
+        {/* ===== 全貌（淨資產、走勢、組成、現金流、負債還清）===== */}
+        {tab === 'hub' && userId && <NetWorthSection userId={userId} month={month} />}
 
         {/* ===== 明細 ===== */}
         {tab === 'tx' && userId && <TransactionsSection userId={userId} month={month} onChanged={() => userId && loadMonth(userId, month)} />}

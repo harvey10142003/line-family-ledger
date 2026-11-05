@@ -24,6 +24,30 @@ command 覆寫對新舊映像都有效（基底 node 映像的 entrypoint `docke
 2. **DROP NOT NULL（P1-4 起）**：新版若把某欄改成可空並寫了 NULL，舊 client 讀到 NULL 會丟錯。回退前查那些欄位 `IS NULL` 的筆數要 0。
 3. **新外鍵**（`Account/CreditCard.ownerMemberId` → FamilyMember，ON DELETE RESTRICT）：舊程式刪除被指為擁有者的成員會失敗（少見）。
 
+### 第 3 批（P1-5／6／7：文字轉帳 D18、文字記帳補強、淨資產快照）多出來的檢查
+
+schema 只加不改（`Transaction.recordedByMemberId`、`Transfer.confirmStatus` 等 6 欄、`NetWorthSnapshot` 表、2 個新 enum，
+新 enum 只出現在新欄位上，舊 client 不讀）。舊程式不會壞，但**數字會不一樣**：
+
+4. **待對方確認的轉帳（D18）**：第 2 批以前的程式不認得 `confirmStatus`，會把「待確認／對方拒絕／只算一邊」的轉帳兩端都算進餘額。
+   回退前查：`SELECT "confirmStatus", count(*) FROM "Transfer" WHERE "confirmStatus" <> 'CONFIRMED' AND "undoneAt" IS NULL GROUP BY 1;`
+   有的話先處理：`PENDING`／`REJECTED` → 標撤銷（`UPDATE "Transfer" SET "undoneAt"=now() WHERE "confirmStatus" IN ('PENDING','REJECTED') AND "undoneAt" IS NULL;`）；
+   `ONE_SIDED` 要請建立者決定（舊版只能兩端都算或整筆撤銷）。往前再部署回第 3 批時，這些標撤銷的不會自動恢復。
+5. **代墊公司費用**：第 3 批起家庭支出、分類、預算、分帳不算 `bookTo=BUSINESS`；回退後舊程式會把它們算回家庭支出（資料沒變，只是報表不同）。
+6. 淨資產快照表舊程式不讀，留著無害；回退期間每月 1 號不會存快照，往前部署後可在「全貌」按「重算上個月」補。
+
+**第 2 批＋第 3 批同一窗上線、出事要退回第 1 批（e5fa2f2）映像時**：第 1 批的程式不認得 Transfer 兩端可為 null、`undoneAt`、`confirmStatus`，
+所以先查三件事，全部 0 才能直接退（SKIP_DB_PUSH 或 command 覆寫）：
+
+```sql
+SELECT count(*) FROM "Transfer" WHERE "fromAccountId" IS NULL OR "toAccountId" IS NULL;  -- 繳卡費、還貸款、借出入：第 1 批讀 t.fromAccount.name 會 500
+SELECT count(*) FROM "Transfer" WHERE "undoneAt" IS NOT NULL;                             -- 第 1 批會把已撤銷的算進餘額
+SELECT count(*) FROM "Transfer" WHERE "confirmStatus" <> 'CONFIRMED';                     -- 第 1 批會把待確認／拒絕的兩端都算進餘額
+```
+
+不是 0（上線後已經有人用新種類轉帳）→ 不要硬退：先修往前；真的要退，只能用 `ledger-deploy.sh` 換版前留的 pg_dump 還原（會丟掉換版後寫入的資料），
+或只退 web、server 留在第 3 批。
+
 ## 回退之後
 
 - 容器是用 override 起來的：之後有人跑 `deploy-sub.sh ledger-server …`／`install.sh` 重建時沒有 override，

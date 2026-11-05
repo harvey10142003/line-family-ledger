@@ -38,6 +38,11 @@ type TransferItem = {
   transferredAt: string;
   undone: boolean;
   canUndo: boolean;
+  // D18：文字轉帳動到對方個人帳戶 → 待對方確認
+  confirmStatus?: 'CONFIRMED' | 'PENDING' | 'ONE_SIDED' | 'REJECTED';
+  counterpartName?: string | null;
+  canConfirm?: boolean;
+  source?: string;
 };
 
 const KINDS: { k: TransferKind; label: string }[] = [
@@ -66,6 +71,14 @@ const ERR_TEXT: Record<string, string> = {
   not_found: '找不到這個帳戶',
   not_creator: '只有建立這筆轉帳的人可以撤銷',
   already_undone: '這筆已經撤銷過了',
+  not_counterpart: '只有被動到帳戶的那位可以確認',
+  not_pending: '這筆已經處理過了',
+};
+
+const CONFIRM_LABEL: Record<string, string> = {
+  PENDING: '待確認',
+  ONE_SIDED: '待確認（先記一邊）',
+  REJECTED: '對方已拒絕',
 };
 
 function ntd(n: number): string {
@@ -271,6 +284,19 @@ export default function TransfersSection({
     }
   };
 
+  // D18：對方記的轉帳動到我的個人帳戶 → 我在這裡確認或拒絕
+  const decide = async (id: string, action: 'confirm' | 'reject') => {
+    setBusy(true);
+    try {
+      const r = await apiSendResult('POST', `/api/liff/transfers/${id}/${action}`, {});
+      if (!r.ok) setMsg(ERR_TEXT[r.data?.code] ?? `沒有成功（${r.status}）`);
+      onChanged();
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const needsName = (canCreateLiability && (from === NEW || to === NEW)) ? !newName.trim() : false;
   const ready = !!from && !!to && Number(amount) > 0 && !needsName;
 
@@ -385,7 +411,7 @@ export default function TransfersSection({
       ) : (
         <ul className="divide-y divide-gray-50">
           {items.map((t) => (
-            <li key={t.id} className={`flex items-center justify-between gap-2 py-2 text-sm ${t.undone ? 'opacity-40' : ''}`}>
+            <li key={t.id} className={`flex items-center justify-between gap-2 py-2 text-sm ${t.undone || t.confirmStatus === 'REJECTED' ? 'opacity-40' : ''}`}>
               <div className="min-w-0">
                 <p className="truncate">
                   <span className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500">{t.kindLabel}</span>
@@ -398,9 +424,25 @@ export default function TransfersSection({
                   {t.note ? `　${t.note}` : ''}
                   {t.undone ? '　已撤銷' : ''}
                 </p>
+                {!t.undone && t.confirmStatus && t.confirmStatus !== 'CONFIRMED' && (
+                  <p className="text-[11px] text-amber-600">
+                    {CONFIRM_LABEL[t.confirmStatus]}
+                    {t.counterpartName && t.confirmStatus !== 'REJECTED' ? `：等 ${t.counterpartName} 確認` : ''}
+                  </p>
+                )}
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <span className={`font-medium ${t.undone ? 'line-through' : ''}`}>{ntd(t.amount)}</span>
+                {t.canConfirm && (
+                  <>
+                    <button onClick={() => decide(t.id, 'confirm')} disabled={busy} className="rounded bg-indigo-500 px-2 py-0.5 text-[11px] text-white">
+                      確認
+                    </button>
+                    <button onClick={() => decide(t.id, 'reject')} disabled={busy} className="rounded border border-gray-200 px-2 py-0.5 text-[11px] text-gray-500">
+                      拒絕
+                    </button>
+                  </>
+                )}
                 {t.canUndo && (
                   <button onClick={() => undo(t.id)} disabled={busy} className="rounded border border-gray-200 px-2 py-0.5 text-[11px] text-gray-500">
                     撤銷
