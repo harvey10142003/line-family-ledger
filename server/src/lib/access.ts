@@ -4,7 +4,7 @@
 // 月報、預算週報、繳費提醒都只透過 AccessScope 問，不在各處自己寫條件。
 //
 // 規則：
-// - 帳戶／信用卡（之後含負債）是「歸屬」的單位：ownerMemberId=null 是共同，有值是某位成員個人的。
+// - 帳戶／信用卡／負債是「歸屬」的單位：ownerMemberId=null 是共同，有值是某位成員個人的。
 // - 本人看自己的、任何人看共同的 → DETAIL（明細）。
 // - 看別人的個人項目：FAMILY_FULL → DETAIL；FAMILY_TOTAL_ONLY → TOTAL（只算進總額，看不到每一筆）；
 //   OWNER_ONLY → NONE（完全看不到，也不算進他看到的任何數字）。
@@ -66,6 +66,14 @@ export class AccessError extends Error {
   }
 }
 
+export interface TransferEnds {
+  fromAccountId: string | null;
+  toAccountId: string | null;
+  fromLiabilityId?: string | null;
+  toCreditCardId?: string | null;
+  toLiabilityId?: string | null;
+}
+
 export interface ScopeItem extends Ownable {
   id: string;
 }
@@ -73,15 +81,48 @@ export interface ScopeItem extends Ownable {
 export class AccessScope {
   private readonly accounts: Map<string, ScopeItem>;
   private readonly cards: Map<string, ScopeItem>;
+  private readonly liabilities: Map<string, ScopeItem>;
 
   constructor(
     public readonly familyId: string,
     public readonly memberId: string,
     accounts: ScopeItem[],
     cards: ScopeItem[],
+    liabilities: ScopeItem[] = [],
   ) {
     this.accounts = new Map(accounts.map((a) => [a.id, a]));
     this.cards = new Map(cards.map((c) => [c.id, c]));
+    this.liabilities = new Map(liabilities.map((l) => [l.id, l]));
+  }
+
+  /** 負債／借出（P1-3）：規則與帳戶相同。 */
+  liabilityLevel(id: string): AccessLevel {
+    const l = this.liabilities.get(id);
+    return l ? levelFor(this.memberId, l) : 'NONE';
+  }
+
+  canWriteLiability(id: string): boolean {
+    const l = this.liabilities.get(id);
+    return !!l && writableBy(this.memberId, l);
+  }
+
+  assertLiabilityWritable(id: string): void {
+    if (this.liabilityLevel(id) === 'NONE') throw new AccessError(404, 'not_found', 'liability not found');
+    if (!this.canWriteLiability(id)) throw new AccessError(403, 'not_owner', 'only the owner of this personal liability can change it');
+  }
+
+  /** 還別人的貸款、把錢借進對方名下的借出：看得到即可（同轉進對方帳戶）。 */
+  assertLiabilityTargetable(id: string): void {
+    if (this.liabilityLevel(id) === 'NONE') throw new AccessError(404, 'not_found', 'liability not found');
+  }
+
+  /** 繳對方的卡費：看得到即可（錢是從自己能動的帳戶出去）。 */
+  assertCardTargetable(id: string): void {
+    if (this.cardLevel(id) === 'NONE') throw new AccessError(404, 'not_found', 'credit card not found');
+  }
+
+  liability(id: string): ScopeItem | undefined {
+    return this.liabilities.get(id);
   }
 
   accountLevel(id: string): AccessLevel {
@@ -122,13 +163,21 @@ export class AccessScope {
     return level !== 'NONE';
   }
 
+  /** 轉帳一端的可見程度：帳戶、卡或負債（P1-4 起來源可以是負債、目的可以是卡或負債）。兩個都空＝NONE。 */
+  transferEndLevel(end: { accountId?: string | null; creditCardId?: string | null; liabilityId?: string | null }): AccessLevel {
+    if (end.accountId) return this.accountLevel(end.accountId);
+    if (end.creditCardId) return this.cardLevel(end.creditCardId);
+    if (end.liabilityId) return this.liabilityLevel(end.liabilityId);
+    return 'NONE';
+  }
+
   /**
    * 轉帳列表：至少一端是我看得到明細的才列出；完全看不到的那一端名稱遮掉。
    * 兩端都是別人的個人帳戶（總額或不公開）→ 不列。
    */
-  transferView(tr: { fromAccountId: string; toAccountId: string }): { visible: boolean; maskFrom: boolean; maskTo: boolean } {
-    const f = this.accountLevel(tr.fromAccountId);
-    const t = this.accountLevel(tr.toAccountId);
+  transferView(tr: TransferEnds): { visible: boolean; maskFrom: boolean; maskTo: boolean } {
+    const f = this.transferEndLevel({ accountId: tr.fromAccountId, liabilityId: tr.fromLiabilityId });
+    const t = this.transferEndLevel({ accountId: tr.toAccountId, creditCardId: tr.toCreditCardId, liabilityId: tr.toLiabilityId });
     return { visible: f === 'DETAIL' || t === 'DETAIL', maskFrom: f === 'NONE', maskTo: t === 'NONE' };
   }
 

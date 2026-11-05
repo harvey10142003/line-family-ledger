@@ -11,6 +11,8 @@ import RecurringSection from '@/components/RecurringSection';
 import BudgetSection from '@/components/BudgetSection';
 import TrendChart from '@/components/TrendChart';
 import GoalsSection from '@/components/GoalsSection';
+import TransfersSection, { type TransferKind, type TransferPreset } from '@/components/TransfersSection';
+import LiabilitiesSection from '@/components/LiabilitiesSection';
 
 type MeResp =
   | { joined: false }
@@ -55,6 +57,14 @@ export default function Home() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [settlement, setSettlement] = useState<Settlement | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
+  // 帳戶分頁：轉帳／還款後讓帳戶、負債、轉帳列表一起重抓；負債頁按「記一筆還款」帶進轉帳表單
+  const [rev, setRev] = useState(0);
+  const [preset, setPreset] = useState<TransferPreset | null>(null);
+  const bump = useCallback(() => setRev((r) => r + 1), []);
+  const payLiability = useCallback((kind: TransferKind, liabilityId: string) => {
+    setPreset({ kind, liabilityId, nonce: Date.now() });
+    if (typeof window !== 'undefined') setTimeout(() => document.getElementById('transfers')?.scrollIntoView({ behavior: 'smooth' }), 50);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -244,8 +254,12 @@ export default function Home() {
         {/* ===== 帳戶 ===== */}
         {tab === 'accounts' && userId && (
           <>
-            <AccountsSection userId={userId} memberId={me.member.id} />
+            <AccountsSection userId={userId} memberId={me.member.id} rev={rev} />
+            <div id="transfers">
+              <TransfersSection userId={userId} memberId={me.member.id} rev={rev} preset={preset} onChanged={bump} />
+            </div>
             <CreditCardsSection userId={userId} memberId={me.member.id} />
+            <LiabilitiesSection userId={userId} memberId={me.member.id} rev={rev} onPay={payLiability} onChanged={bump} />
           </>
         )}
 

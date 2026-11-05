@@ -11,3 +11,10 @@ export function ymdTaipei(d: Date): string {
   const day = String(t.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
+
+// YYYY-MM-DD（台北日期）→ 台北當天中午的 Date（存進 DateTime 欄位，再用 ymdTaipei 讀回同一天）。非法回 undefined。
+export function taipeiNoon(raw: unknown): Date | undefined {
+  if (typeof raw !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return undefined;
+  const d = new Date(`${raw}T12:00:00+08:00`);
+  return Number.isNaN(d.getTime()) || ymdTaipei(d) !== raw ? undefined : d;
+}

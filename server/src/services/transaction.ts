@@ -258,25 +258,7 @@ export async function getSettlement(familyId: string, month: string, scope: Acce
   };
 }
 
-// 月度轉帳列表
-export async function getMonthlyTransfers(familyId: string, month: string, scope: AccessScope) {
-  const { start, end } = monthRange(month);
-  const rows = await prisma.transfer.findMany({
-    where: { familyId, transferredAt: { gte: start, lt: end } },
-    include: { fromAccount: true, toAccount: true, member: true },
-    orderBy: { transferredAt: 'desc' },
-  });
-  const views = rows.map((t) => ({ t, v: scope.transferView(t) })).filter((x) => x.v.visible);
-  return views.map(({ t, v }) => ({
-    id: t.id,
-    amount: Number(t.amount),
-    fromName: v.maskFrom ? HIDDEN_ACCOUNT_NAME : t.fromAccount.name,
-    toName: v.maskTo ? HIDDEN_ACCOUNT_NAME : t.toAccount.name,
-    note: t.note,
-    memberName: t.member.displayName,
-    transferredAt: t.transferredAt.toISOString(),
-  }));
-}
+// 月轉帳列表搬到 services/transfer.ts（getMonthlyTransfers，P1-4 轉帳引擎）。
 
 // 月度明細列表（新到舊）：只列看得到明細的；canEdit＝D10（共同或本人的個人帳戶）
 export async function getMonthlyTransactions(familyId: string, month: string, scope: AccessScope) {

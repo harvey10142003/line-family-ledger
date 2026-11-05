@@ -50,6 +50,8 @@ export type AccountWithBalance = {
 };
 
 // 帳戶餘額 = 期初 + 收入 - 支出 + 轉入 - 轉出
+// 轉帳只算沒撤銷的；另一端是卡或負債時（繳卡費、還貸款、借出入）只動帳戶這一端。
+// 連帶的利息、手續費是一般交易，已經算在收入／支出裡。
 // 依 scope：別人 OWNER_ONLY 的帳戶不列；只看總額的列出餘額（餘額本來就是總額）。
 export async function getAccountsWithBalances(familyId: string, includeArchived: boolean, scope: AccessScope): Promise<AccountWithBalance[]> {
   await ensureDefaultAccounts(familyId);
@@ -68,7 +70,7 @@ export async function getAccountsWithBalances(familyId: string, includeArchived:
       select: { accountId: true, amount: true, category: { select: { type: true } } },
     }),
     prisma.transfer.findMany({
-      where: { familyId },
+      where: { familyId, undoneAt: null },
       select: { fromAccountId: true, toAccountId: true, amount: true },
     }),
   ]);
@@ -81,8 +83,8 @@ export async function getAccountsWithBalances(familyId: string, includeArchived:
   }
   for (const tr of transfers) {
     const amt = Number(tr.amount);
-    delta.set(tr.fromAccountId, (delta.get(tr.fromAccountId) ?? 0) - amt);
-    delta.set(tr.toAccountId, (delta.get(tr.toAccountId) ?? 0) + amt);
+    if (tr.fromAccountId) delta.set(tr.fromAccountId, (delta.get(tr.fromAccountId) ?? 0) - amt);
+    if (tr.toAccountId) delta.set(tr.toAccountId, (delta.get(tr.toAccountId) ?? 0) + amt);
   }
 
   return accounts.map((a) => {
@@ -195,37 +197,4 @@ export async function updateAccount(
   });
 }
 
-export async function createTransfer(params: {
-  familyId: string;
-  memberId: string;
-  fromAccountId: string;
-  toAccountId: string;
-  amount: number;
-  note?: string | null;
-  transferredAt?: Date;
-}, scope: AccessScope) {
-  if (params.fromAccountId === params.toAccountId) throw new Error('from/to accounts must differ');
-  if (!(params.amount > 0)) throw new Error('amount must be positive');
-
-  // 驗證兩個帳戶都屬於該家庭
-  const accs = await prisma.account.findMany({
-    where: { familyId: params.familyId, id: { in: [params.fromAccountId, params.toAccountId] } },
-  });
-  if (accs.length !== 2) throw new Error('invalid accounts');
-  // D10／D18：不能從別人的個人帳戶轉出；目的帳戶要看得到（不能轉進看不到的帳戶）
-  scope.assertAccountWritable(params.fromAccountId);
-  scope.assertAccountTargetable(params.toAccountId);
-
-  return prisma.transfer.create({
-    data: {
-      familyId: params.familyId,
-      memberId: params.memberId,
-      fromAccountId: params.fromAccountId,
-      toAccountId: params.toAccountId,
-      amount: params.amount,
-      note: params.note ?? null,
-      transferredAt: params.transferredAt ?? new Date(),
-    },
-    include: { fromAccount: true, toAccount: true },
-  });
-}
+// 轉帳的建立、撤銷、對帳狀態搬到 services/transfer.ts（P1-4 轉帳引擎，唯一出口）。

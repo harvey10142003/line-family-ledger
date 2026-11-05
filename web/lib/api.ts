@@ -63,3 +63,24 @@ export async function apiDownload(path: string, _lineUserId: string | undefined,
   a.remove();
   URL.revokeObjectURL(url);
 }
+
+// 需要讀錯誤代碼的寫入（例如轉帳溢繳要確認、本金超過剩餘本金）：4xx 不丟錯，回傳狀態與內容。
+// 401 照樣走重登。
+export async function apiSendResult<T = any>(method: 'POST' | 'PUT' | 'PATCH', path: string, body: unknown): Promise<{ ok: boolean; status: number; data: T }> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: authHeaders({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) {
+    reloginOnce();
+    throw new LiffSessionExpiredError();
+  }
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  return { ok: res.ok, status: res.status, data };
+}

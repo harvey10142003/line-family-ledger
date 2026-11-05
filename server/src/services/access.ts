@@ -1,15 +1,16 @@
 // 從資料庫載入某位成員的 AccessScope（判斷規則本身在 lib/access.ts）。
-// 一個家庭的帳戶與卡很少，整包載入記憶體判斷，不在每個查詢各自 join 條件。
+// 一個家庭的帳戶、卡、負債很少，整包載入記憶體判斷，不在每個查詢各自 join 條件。
 import { prisma } from '../prisma';
 import { AccessError, AccessScope } from '../lib/access';
 
 export async function loadAccessScope(familyId: string, memberId: string): Promise<AccessScope> {
   const sel = { id: true, ownerMemberId: true, visibility: true } as const;
-  const [accounts, cards] = await Promise.all([
+  const [accounts, cards, liabilities] = await Promise.all([
     prisma.account.findMany({ where: { familyId }, select: sel }),
     prisma.creditCard.findMany({ where: { familyId }, select: sel }),
+    prisma.liability.findMany({ where: { familyId }, select: sel }),
   ]);
-  return new AccessScope(familyId, memberId, accounts, cards);
+  return new AccessScope(familyId, memberId, accounts, cards, liabilities);
 }
 
 /**

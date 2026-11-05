@@ -1,15 +1,27 @@
 import { Router, type RequestHandler, type Response } from 'express';
 import { prisma } from '../prisma';
-import { getMonthlySummary, getMonthlyTransactions, getMonthlyTransfers, getSettlement, getTrend } from '../services/transaction';
+import { getMonthlySummary, getMonthlyTransactions, getSettlement, getTrend } from '../services/transaction';
 import { getSavingsGoals, createSavingsGoal, updateSavingsGoal, adjustSaved, deleteSavingsGoal } from '../services/savings';
 import { getBudgets, setBudget, getBudgetStatus } from '../services/budget';
-import { getAccountsWithBalances, createAccount, updateAccount, createTransfer } from '../services/account';
+import { getAccountsWithBalances, createAccount, updateAccount } from '../services/account';
 import { getCreditCards, createCreditCard, updateCreditCard } from '../services/creditcard';
+import { createTransfer, undoTransfer, setReconcileStatus, getMonthlyTransfers, getTransferView } from '../services/transfer';
+import {
+  getLiabilities,
+  createLiability,
+  updateLiability,
+  addRateChange,
+  getSchedule,
+  getPayments,
+  suggestPaymentSplit,
+} from '../services/liability';
+import { getCardStatements, createCardStatement } from '../services/card-statement';
+import { TransferRuleError } from '../lib/transfer-rules';
 import { getRecurringRules, createRecurringRule, updateRecurringRule, deleteRecurringRule } from '../services/recurring';
 import { loadAccessScope, getWritableTransaction } from '../services/access';
 import { AccessError, type AccessScope } from '../lib/access';
 import type { AccountType, Family, FamilyMember, RecurringFreq } from '@prisma/client';
-import { ymdTaipei } from '../lib/time-tw';
+import { ymdTaipei, taipeiNoon } from '../lib/time-tw';
 import { createLiffAuth, authedLineUserId, resolveLoginChannelId } from '../lib/liff-auth';
 import { logger } from '../logger';
 
@@ -60,6 +72,7 @@ const requireMember: RequestHandler = async (_req, res, next) => {
 // 權限錯誤 → 403／404；其他沿用舊行為 400
 function fail(res: Response, err: unknown) {
   if (err instanceof AccessError) return res.status(err.status).json({ error: err.message, code: err.code });
+  if (err instanceof TransferRuleError) return res.status(err.status).json({ error: err.message, code: err.code, ...(err.detail ? { detail: err.detail } : {}) });
   return res.status(400).json({ error: String(err) });
 }
 
@@ -194,21 +207,118 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     return res.json({ month, items: await getMonthlyTransfers(member.familyId, month, scope) });
   });
 
-  // 建立轉帳（來源必須是共同或自己的帳戶）
+  // 建立轉帳（P1-4 轉帳引擎）：kind 不給＝一般帳戶轉帳（舊表單相容）。
+  // 錢出去的那端要能改（共同或自己的）；進去的那端看得到即可。轉帳本身不算收支，只有利息、手續費另記。
   r.post('/transfers', async (req, res) => {
     const { member, scope } = ctx(res);
-    const { fromAccountId, toAccountId, amount, note } = (req.body ?? {}) as {
-      fromAccountId?: string;
-      toAccountId?: string;
-      amount?: number;
-      note?: string | null;
-    };
-    if (!fromAccountId || !toAccountId || typeof amount !== 'number') {
-      return res.status(400).json({ error: 'fromAccountId, toAccountId, amount required' });
-    }
     try {
-      const tr = await createTransfer({ familyId: member.familyId, memberId: member.id, fromAccountId, toAccountId, amount, note }, scope);
-      return res.json(tr);
+      const out = await createTransfer(member.familyId, member.id, (req.body ?? {}) as Record<string, unknown>, scope);
+      const view = await getTransferView(member.familyId, out.transfer.id, scope);
+      return res.json({ ...view, statement: out.statement, linkedTransactionIds: out.linkedTransactionIds, liabilityId: out.liabilityId });
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  // 撤銷轉帳：只有建立者；不刪資料，餘額／帳單已繳／負債本金／連帶收支全部還原
+  r.post('/transfers/:id/undo', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      return res.json(await undoTransfer(member.familyId, member.id, req.params.id, scope));
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  // 對帳狀態（跟對帳單對上了沒）。body: { reconcileStatus: 'RECONCILED' | 'UNRECONCILED' }
+  r.patch('/transfers/:id/reconcile', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      return res.json(await setReconcileStatus(member.familyId, member.id, req.params.id, (req.body ?? {}).reconcileStatus, scope));
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  // ===== 負債與借出（P1-3）=====
+  r.get('/liabilities', async (req, res) => {
+    const { member, scope } = ctx(res);
+    return res.json(await getLiabilities(member.familyId, req.query.includeArchived === '1', scope));
+  });
+
+  r.post('/liabilities', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      const l = await createLiability(member.familyId, (req.body ?? {}) as Record<string, unknown>, scope);
+      return res.json({ id: l.id });
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  r.put('/liabilities/:id', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      const l = await updateLiability(member.familyId, req.params.id, (req.body ?? {}) as Record<string, unknown>, scope);
+      return res.json({ id: l.id });
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  // 利率變動。body: { effectiveDate: 'YYYY-MM-DD', annualRate: number(%) }
+  r.post('/liabilities/:id/rate-changes', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      return res.json({ rateChanges: await addRateChange(member.familyId, req.params.id, (req.body ?? {}) as Record<string, unknown>, scope) });
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  r.get('/liabilities/:id/schedule', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      return res.json(await getSchedule(member.familyId, req.params.id, scope));
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  r.get('/liabilities/:id/payments', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      return res.json({ items: await getPayments(member.familyId, req.params.id, scope) });
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  // 只知道總額時建議本金／利息怎麼拆。?total=18000&date=YYYY-MM-DD
+  r.get('/liabilities/:id/suggest-split', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      const date = taipeiNoon(req.query.date) ? String(req.query.date) : ymdTaipei(new Date());
+      return res.json(await suggestPaymentSplit(member.familyId, req.params.id, Number(req.query.total), date, scope));
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  // ===== 信用卡帳單（P1-4 繳卡費沖這裡；P2 由丟件自動建立）=====
+  r.get('/credit-cards/:id/statements', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      return res.json({ items: await getCardStatements(member.familyId, req.params.id, scope) });
+    } catch (err) {
+      return fail(res, err);
+    }
+  });
+
+  r.post('/credit-cards/:id/statements', async (req, res) => {
+    const { member, scope } = ctx(res);
+    try {
+      return res.json(await createCardStatement(member.familyId, req.params.id, (req.body ?? {}) as Record<string, unknown>, scope));
     } catch (err) {
       return fail(res, err);
     }

@@ -393,16 +393,17 @@ model LiabilityRateChange {
 }
 
 model LiabilityPayment {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   liabilityId   String
   paidAt        DateTime
-  total         Decimal  @db.Decimal(14, 2)
-  principalPart Decimal  @default(0) @db.Decimal(14, 2) // 本金（不是支出）
-  interestPart  Decimal  @default(0) @db.Decimal(14, 2) // 利息（支出）
-  feePart       Decimal  @default(0) @db.Decimal(14, 2) // 帳管費／違約金（支出）
+  total         Decimal   @db.Decimal(14, 2)
+  principalPart Decimal   @default(0) @db.Decimal(14, 2) // 本金（不是支出）
+  interestPart  Decimal   @default(0) @db.Decimal(14, 2) // 利息（支出）
+  feePart       Decimal   @default(0) @db.Decimal(14, 2) // 帳管費／違約金（支出）
   transactionId String? // 利息／手續費那筆支出
   transferId    String? // 本金那筆轉帳
-  createdAt     DateTime @default(now())
+  undoneAt      DateTime? // P1-4：對應的轉帳被撤銷時一起標記（不刪資料）
+  createdAt     DateTime  @default(now())
 
   liability Liability @relation(fields: [liabilityId], references: [id], onDelete: Cascade)
 
@@ -414,21 +415,22 @@ model Transfer {
   id                   String          @id @default(cuid())
   familyId             String
   memberId             String
-  fromAccountId        String
-  toAccountId          String
+  // P1-4 起放寬成可為 null（DROP NOT NULL，不刪資料）：繳卡費的目的是卡、還貸款的目的是負債、
+  // 借入／收回的來源是負債。舊資料兩端都有值，行為不變。來源、目的各填一個，組合由 lib/transfer-rules.ts 檢查。
+  fromAccountId        String?
+  toAccountId          String?
   amount               Decimal         @db.Decimal(12, 2)
   note                 String?
   transferredAt        DateTime
   createdAt            DateTime        @default(now())
   // ---- 財務中樞 P1-1（只加不改；舊資料＝一般帳戶轉帳、手動、未對帳、未撤銷）----
-  // fromAccountId／toAccountId 目前仍是必填（只加不改）。繳卡費、還貸款這類「目的不是帳戶」的種類，
-  // 要在 P1-4 轉帳引擎把它們放寬成可為 null（DROP NOT NULL，不刪資料）時一起處理。
   kind                 TransferKind    @default(ACCOUNT)
   fromLiabilityId      String?
   toCreditCardId       String?
   toLiabilityId        String?
   cardStatementId      String? // CARD_PAYMENT 沖哪一期帳單
   fee                  Decimal?        @db.Decimal(14, 2) // 手續費（另記一筆支出，見 linkedTransactionIds）
+  interest             Decimal?        @db.Decimal(14, 2) // P1-4：連帶利息（還貸款＝支出；收回借款、定存解約＝收入；另記一筆交易）
   source               TransferSource  @default(MANUAL)
   reconcileStatus      ReconcileStatus @default(UNRECONCILED)
   linkedTransactionIds String[]        @default([]) // 這次轉帳順帶產生的支出（利息、手續費）
@@ -437,8 +439,9 @@ model Transfer {
 
   family        Family         @relation(fields: [familyId], references: [id], onDelete: Cascade)
   member        FamilyMember   @relation(fields: [memberId], references: [id])
-  fromAccount   Account        @relation("TransferFrom", fields: [fromAccountId], references: [id])
-  toAccount     Account        @relation("TransferTo", fields: [toAccountId], references: [id])
+  // 改成可選後明寫 onDelete: Restrict，維持原本必填關聯的外鍵行為（Prisma 可選關聯預設是 SetNull，會重建外鍵）
+  fromAccount   Account?       @relation("TransferFrom", fields: [fromAccountId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  toAccount     Account?       @relation("TransferTo", fields: [toAccountId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   fromLiability Liability?     @relation("TransferFromLiability", fields: [fromLiabilityId], references: [id], onDelete: Restrict)
   toCreditCard  CreditCard?    @relation("TransferToCard", fields: [toCreditCardId], references: [id], onDelete: Restrict)
   toLiability   Liability?     @relation("TransferToLiability", fields: [toLiabilityId], references: [id], onDelete: Restrict)

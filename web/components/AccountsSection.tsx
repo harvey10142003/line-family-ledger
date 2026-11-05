@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { apiGet, apiPost, apiPut } from '@/lib/api';
 import { OwnershipFields, OwnerBadges, ownershipBody, type Owned, type Visibility } from './OwnershipFields';
 
-type AccountType = 'CASH' | 'BANK' | 'CREDIT_CARD' | 'EPAYMENT' | 'OTHER';
+type AccountType = 'CASH' | 'BANK' | 'CREDIT_CARD' | 'EPAYMENT' | 'OTHER' | 'TIME_DEPOSIT' | 'SECURITIES' | 'INVESTMENT' | 'CRYPTO';
 
 type Account = {
   id: string;
@@ -24,20 +24,26 @@ const TYPE_META: Record<AccountType, { label: string; icon: string }> = {
   CREDIT_CARD: { label: '信用卡', icon: '💳' }, // 舊資料顯示用；信用卡已獨立區塊
   EPAYMENT: { label: '電子錢包', icon: '👛' },
   OTHER: { label: '其他', icon: '📦' },
+  // 財務中樞新類型：不放 emoji（圖示欄留空）
+  TIME_DEPOSIT: { label: '定存', icon: '' },
+  SECURITIES: { label: '證券', icon: '' },
+  INVESTMENT: { label: '投資', icon: '' },
+  CRYPTO: { label: '虛擬資產', icon: '' },
 };
 
 // 新增/編輯帳戶可選的類型（信用卡已獨立，不在此）
-const SELECTABLE_TYPES: AccountType[] = ['CASH', 'BANK', 'EPAYMENT', 'OTHER'];
+const SELECTABLE_TYPES: AccountType[] = ['CASH', 'BANK', 'EPAYMENT', 'TIME_DEPOSIT', 'OTHER'];
 
 function ntd(n: number): string {
   const s = `$${Math.abs(n).toLocaleString('en-US')}`;
   return n < 0 ? `-${s}` : s;
 }
 
-export default function AccountsSection({ userId, memberId }: { userId: string; memberId: string }) {
+// 轉帳表單搬到 TransfersSection（P1-4）；rev 變了就重抓餘額（轉帳、還款之後）
+export default function AccountsSection({ userId, memberId, rev = 0 }: { userId: string; memberId: string; rev?: number }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
-  const [mode, setMode] = useState<'none' | 'add' | 'transfer'>('none');
+  const [mode, setMode] = useState<'none' | 'add'>('none');
   const [editing, setEditing] = useState<Account | null>(null);
 
   // 新增/編輯表單
@@ -48,11 +54,6 @@ export default function AccountsSection({ userId, memberId }: { userId: string; 
   const [fMine, setFMine] = useState(false);
   const [fVis, setFVis] = useState<Visibility>('FAMILY_TOTAL_ONLY');
   const [busy, setBusy] = useState(false);
-
-  // 轉帳表單
-  const [tFrom, setTFrom] = useState('');
-  const [tTo, setTTo] = useState('');
-  const [tAmount, setTAmount] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -65,7 +66,7 @@ export default function AccountsSection({ userId, memberId }: { userId: string; 
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, rev]);
 
   const total = accounts.reduce((s, a) => s + a.balance, 0);
 
@@ -133,26 +134,11 @@ export default function AccountsSection({ userId, memberId }: { userId: string; 
     }
   };
 
-  const doTransfer = async () => {
-    const amt = Number(tAmount) || 0;
-    if (!tFrom || !tTo || tFrom === tTo || amt <= 0) return;
-    setBusy(true);
-    try {
-      await apiPost('/api/liff/transfers', userId, { fromAccountId: tFrom, toAccountId: tTo, amount: amt });
-      setMode('none');
-      setTAmount('');
-      await load();
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <section className="rounded-lg bg-white p-4 shadow-sm">
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-gray-700">帳戶 / 付款方式</h2>
         <div className="flex gap-2">
-          <button onClick={() => setMode(mode === 'transfer' ? 'none' : 'transfer')} className="rounded-md border border-gray-200 px-2.5 py-1 text-xs text-gray-600">⇄ 轉帳</button>
           <button onClick={openAdd} className="rounded-md bg-indigo-500 px-2.5 py-1 text-xs font-medium text-white">+ 帳戶</button>
         </div>
       </div>
@@ -190,7 +176,7 @@ export default function AccountsSection({ userId, memberId }: { userId: string; 
           <div className="flex flex-wrap gap-1.5">
             {SELECTABLE_TYPES.map((t) => (
               <button key={t} onClick={() => setFType(t)} className={`rounded-full px-3 py-1 text-xs ${fType === t ? 'bg-indigo-500 text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
-                {TYPE_META[t].icon} {TYPE_META[t].label}
+                {TYPE_META[t].icon ? `${TYPE_META[t].icon} ` : ''}{TYPE_META[t].label}
               </button>
             ))}
           </div>
@@ -214,29 +200,6 @@ export default function AccountsSection({ userId, memberId }: { userId: string; 
         </div>
       )}
 
-      {/* 轉帳 */}
-      {mode === 'transfer' && (
-        <div className="mt-3 space-y-2 rounded-md border border-gray-100 bg-gray-50 p-3">
-          <p className="text-xs font-medium text-gray-600">帳戶轉帳</p>
-          <div className="flex items-center gap-2">
-            <select value={tFrom} onChange={(e) => setTFrom(e.target.value)} className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-2 text-sm">
-              <option value="">從…</option>
-              {/* 只能從共同或自己的帳戶轉出（D10） */}
-              {accounts.filter((a) => a.canEdit !== false).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
-            <span className="text-gray-400">→</span>
-            <select value={tTo} onChange={(e) => setTTo(e.target.value)} className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-2 text-sm">
-              <option value="">到…</option>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
-          </div>
-          <input value={tAmount} onChange={(e) => setTAmount(e.target.value)} type="number" inputMode="numeric" placeholder="金額" className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm" />
-          <div className="flex gap-2">
-            <button onClick={doTransfer} disabled={busy} className="rounded-md bg-indigo-500 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{busy ? '處理中' : '確認轉帳'}</button>
-            <button onClick={() => setMode('none')} className="rounded-md border border-gray-200 px-4 py-2 text-sm text-gray-600">取消</button>
-          </div>
-        </div>
-      )}
     </section>
   );
 }

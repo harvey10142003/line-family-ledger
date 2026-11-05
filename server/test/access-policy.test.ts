@@ -136,3 +136,51 @@ test('levelFor／writableBy 基本規則', () => {
   assert.equal(levelFor(SHARK, { ownerMemberId: null, visibility: 'OWNER_ONLY' }), 'DETAIL'); // 共同不看 visibility
   assert.equal(writableBy(APPLE, { ownerMemberId: SHARK, visibility: 'FAMILY_FULL' }), false); // D10：看得到也不能改
 });
+
+// ---- P1-3／P1-4：負債與轉帳端點（卡、負債）同一套規則 ----
+const scopeWithLiabilities = (who: string) =>
+  new AccessScope(
+    'fam',
+    who === 'shark' ? SHARK : APPLE,
+    ITEMS.map((i) => ({ ...i })),
+    ITEMS.map((i) => ({ ...i })),
+    ITEMS.map((i) => ({ ...i })),
+  );
+
+test('負債矩陣：2 成員 × 7 種歸屬 × 讀明細／算進總額／改（與帳戶同表）', () => {
+  for (const [who, id, detail, total, edit] of EXPECTED) {
+    const s = scopeWithLiabilities(who);
+    const lv = s.liabilityLevel(id);
+    assert.equal(yn(lv === 'DETAIL'), detail, `${who} ${id} detail`);
+    assert.equal(yn(lv !== 'NONE'), total, `${who} ${id} total`);
+    assert.equal(yn(s.canWriteLiability(id)), edit, `${who} ${id} edit`);
+    if (edit === 'Y') assert.doesNotThrow(() => s.assertLiabilityWritable(id));
+    else assert.throws(() => s.assertLiabilityWritable(id), (e: any) => e instanceof AccessError && e.status === (total === 'Y' ? 403 : 404));
+    // 還別人的貸款、繳別人的卡：看得到即可；完全看不到 → 404
+    if (total === 'Y') {
+      assert.doesNotThrow(() => s.assertLiabilityTargetable(id));
+      assert.doesNotThrow(() => s.assertCardTargetable(id));
+    } else {
+      assert.throws(() => s.assertLiabilityTargetable(id), (e: any) => e.status === 404);
+      assert.throws(() => s.assertCardTargetable(id), (e: any) => e.status === 404);
+    }
+  }
+});
+
+test('負債：找不到的 id 一律看不到（fail-closed）；舊呼叫不給負債清單也能用', () => {
+  const s = scopeOf('shark');
+  assert.equal(s.liabilityLevel('joint'), 'NONE');
+  assert.equal(s.canWriteLiability('joint'), false);
+});
+
+test('轉帳列表：來源是負債、目的是卡或負債時也照可見範圍遮名／不列', () => {
+  const a = scopeWithLiabilities('apple');
+  // 從共同帳戶繳 Shark 不公開的卡：Apple 看得到這筆，卡名遮掉
+  assert.deepEqual(a.transferView({ fromAccountId: 'joint', toAccountId: null, toCreditCardId: 'shark_owner' }), { visible: true, maskFrom: false, maskTo: true });
+  // Shark 只看總額的帳戶還 Shark 不公開的貸款：Apple 不列
+  assert.deepEqual(a.transferView({ fromAccountId: 'shark_total', toAccountId: null, toLiabilityId: 'shark_owner' }), { visible: false, maskFrom: false, maskTo: true });
+  // 收回 Apple 自己的借出到共同帳戶
+  assert.deepEqual(a.transferView({ fromAccountId: null, fromLiabilityId: 'apple_owner', toAccountId: 'joint' }), { visible: true, maskFrom: false, maskTo: false });
+  // 兩端都沒有（不該發生）→ 不列
+  assert.equal(a.transferView({ fromAccountId: null, toAccountId: null }).visible, false);
+});
