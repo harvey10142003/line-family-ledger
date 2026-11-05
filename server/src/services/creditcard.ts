@@ -1,8 +1,9 @@
 import { prisma } from '../prisma';
+import { ymdTaipei } from '../lib/time-tw';
 
 // 台北「今天」的 y/m/d
-function taipeiToday(): { y: number; m: number; d: number } {
-  const t = new Date(Date.now() + 8 * 60 * 60 * 1000);
+function taipeiToday(now: Date = new Date()): { y: number; m: number; d: number } {
+  const t = new Date(now.getTime() + 8 * 60 * 60 * 1000);
   return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() };
 }
 
@@ -25,9 +26,14 @@ function cycleStart(statementDay: number): Date {
   return taipeiDate(py, pm, statementDay);
 }
 
-// 下次繳費日（>= 今天的最近 dueDay）
-function nextDueDate(dueDay: number): Date {
-  const { y, m, d } = taipeiToday();
+// 下次繳費日（>= 今天的最近 dueDay），回傳台北日期 YYYY-MM-DD。
+// taipeiDate() 是台北 00:00＝UTC 前一天 16:00，不可用 toISOString().slice(0, 10)，會早一天。
+export function nextDueDate(dueDay: number, now: Date = new Date()): string {
+  return ymdTaipei(nextDueDateAt(dueDay, now));
+}
+
+function nextDueDateAt(dueDay: number, now: Date): Date {
+  const { y, m, d } = taipeiToday(now);
   if (d <= dueDay) return taipeiDate(y, m, dueDay);
   const ny = m === 12 ? y + 1 : y;
   const nm = m === 12 ? 1 : m + 1;
@@ -80,7 +86,7 @@ export async function getCreditCards(familyId: string, includeArchived = false):
       dueDay: c.dueDay,
       cycleUsed,
       available: Math.round((limit - cycleUsed) * 100) / 100,
-      nextDueDate: nextDueDate(c.dueDay).toISOString().slice(0, 10),
+      nextDueDate: nextDueDate(c.dueDay),
       isArchived: c.isArchived,
       sortOrder: c.sortOrder,
     };
