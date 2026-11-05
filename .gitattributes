@@ -1,0 +1,2 @@
+# 容器內 sh 執行的腳本一律 LF（CRLF 會讓 set -eu 等指令壞掉；git archive 也套用此規則）
+*.sh text eol=lf

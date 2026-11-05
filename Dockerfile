@@ -28,7 +28,9 @@ COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/server/package.json ./server/
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./
+COPY --from=build /app/scripts/start-server.sh ./scripts/start-server.sh
 EXPOSE 3000
-# 不帶 --accept-data-loss：schema 與資料庫不一致且會刪欄位／表時，db push 直接失敗、容器不起來（deploy-sub.sh 會換回舊版），
-# 不會靜默刪資料（2026-11 搬 GCP 時改，原本 Zeabur 版帶這個旗標）。真的要刪欄位時，先手動備份再另外處理。
-CMD ["sh", "-c", "npx prisma db push --skip-generate && node server/dist/index.js"]
+# 啟動腳本：預設先 prisma db push（不帶 --accept-data-loss：schema 與資料庫不一致且會刪欄位／表時，db push 直接失敗、
+# 容器不起來，不會靜默刪資料；2026-11 搬 GCP 時改，原本 Zeabur 版帶這個旗標）。真的要刪欄位時，先手動備份再另外處理。
+# 回退到 schema 較舊的版本時帶 SKIP_DB_PUSH=1（見 docs/deploy/rollback.md）。
+CMD ["sh", "scripts/start-server.sh"]
