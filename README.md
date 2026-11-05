@@ -55,6 +55,7 @@ npm run dev
 
 - `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN`：LINE 官方帳號
 - `LINE_LIFF_ID` / `NEXT_PUBLIC_LIFF_ID`：LIFF App ID
+- `LINE_LOGIN_CHANNEL_ID`：LIFF 所屬 LINE Login channel id。`/api/liff/*` 一律要求 `Authorization: Bearer <liff.getIDToken()>`，後端打 LINE `oauth2/v2.1/verify` 驗證（client_id＝此值）後取 sub 當使用者；未設時取 `LINE_LIFF_ID` 前綴。LIFF app scope 必須勾 `openid`
 - `GEMINI_API_KEY`：Google Gemini 2.5 Flash（文字 parse + 拍照辨識）
 - `DATABASE_URL`：PostgreSQL 連線字串
 

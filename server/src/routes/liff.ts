@@ -14,8 +14,23 @@ import { getCreditCards, createCreditCard, updateCreditCard } from '../services/
 import { getRecurringRules, createRecurringRule, updateRecurringRule, deleteRecurringRule } from '../services/recurring';
 import type { AccountType, RecurringFreq } from '@prisma/client';
 import { ymdTaipei } from '../lib/time-tw';
+import { createLiffAuth, authedLineUserId, resolveLoginChannelId } from '../lib/liff-auth';
+import { logger } from '../logger';
 
 export const liffRouter = Router();
+
+// 所有 /api/liff/* 先過 LIFF ID token 驗證（Authorization: Bearer <liff.getIDToken()>）。
+// 不再採信前端自報的 userId header；userId 一律取 LINE verify 回傳的 sub。
+const loginChannel = resolveLoginChannelId(process.env);
+if (loginChannel.source !== 'env') {
+  logger.warn({ channelId: loginChannel.channelId }, 'LINE_LOGIN_CHANNEL_ID 未設，改用 LINE_LIFF_ID 前綴當 LIFF 所屬 Login channel id');
+}
+liffRouter.use(
+  createLiffAuth({
+    channelId: loginChannel.channelId,
+    onVerifyError: (detail) => logger.error({ detail }, 'LINE ID token verify unavailable'),
+  }),
+);
 
 // 台北當月 "YYYY-MM"（server 為 UTC，需 +8h 再取年月）
 function currentTaipeiMonth(): string {
@@ -30,7 +45,7 @@ function resolveMonth(raw: unknown): string {
   return currentTaipeiMonth();
 }
 
-// 從 header 取得 LINE userId 並查出歸屬家庭成員
+// 以已驗證的 LINE userId（ID token sub）查出歸屬家庭成員
 async function resolveMember(lineUserId: string) {
   return prisma.familyMember.findFirst({
     where: { lineUserId },
@@ -41,8 +56,7 @@ async function resolveMember(lineUserId: string) {
 
 // 給 LIFF 前端：以 LINE userId 查目前歸屬的家庭與成員資訊
 liffRouter.get('/me', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
 
   const member = await resolveMember(lineUserId);
   if (!member) return res.json({ joined: false });
@@ -56,8 +70,7 @@ liffRouter.get('/me', async (req, res) => {
 
 // 月度摘要：總支出/總收入 + 分類占比 + 成員占比
 liffRouter.get('/summary', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
 
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
@@ -69,8 +82,7 @@ liffRouter.get('/summary', async (req, res) => {
 
 // 月度明細列表（新到舊）
 liffRouter.get('/transactions', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
 
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
@@ -82,8 +94,7 @@ liffRouter.get('/transactions', async (req, res) => {
 
 // 預算使用狀況（整體 + 各分類），含設定值
 liffRouter.get('/budget-status', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -97,8 +108,7 @@ liffRouter.get('/budget-status', async (req, res) => {
 
 // 設定預算（整體或某分類）。body: { categoryId: string|null, amount: number }
 liffRouter.put('/budgets', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -118,8 +128,7 @@ liffRouter.put('/budgets', async (req, res) => {
 
 // 分帳結算
 liffRouter.get('/settlement', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -129,8 +138,7 @@ liffRouter.get('/settlement', async (req, res) => {
 
 // 帳戶清單（含餘額）
 liffRouter.get('/accounts', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -140,8 +148,7 @@ liffRouter.get('/accounts', async (req, res) => {
 
 // 新增帳戶
 liffRouter.post('/accounts', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -162,8 +169,7 @@ liffRouter.post('/accounts', async (req, res) => {
 
 // 編輯帳戶（名稱/類型/圖示/期初/預設/封存）
 liffRouter.put('/accounts/:id', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -187,8 +193,7 @@ liffRouter.put('/accounts/:id', async (req, res) => {
 
 // 轉帳列表
 liffRouter.get('/transfers', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -198,8 +203,7 @@ liffRouter.get('/transfers', async (req, res) => {
 
 // 建立轉帳
 liffRouter.post('/transfers', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -229,8 +233,7 @@ liffRouter.post('/transfers', async (req, res) => {
 
 // 信用卡清單（含本期已用/可用額度/結算日/繳費日）
 liffRouter.get('/credit-cards', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -240,8 +243,7 @@ liffRouter.get('/credit-cards', async (req, res) => {
 
 // 新增信用卡（需額度/結算日/繳費日）
 liffRouter.post('/credit-cards', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -262,8 +264,7 @@ liffRouter.post('/credit-cards', async (req, res) => {
 
 // 編輯信用卡
 liffRouter.put('/credit-cards/:id', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -286,8 +287,7 @@ liffRouter.put('/credit-cards/:id', async (req, res) => {
 
 // 改某筆交易的帳戶
 liffRouter.patch('/transactions/:id/account', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -309,8 +309,7 @@ liffRouter.patch('/transactions/:id/account', async (req, res) => {
 
 // 收支趨勢（近 N 月）
 liffRouter.get('/trend', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   const months = Math.min(Math.max(Number(req.query.months) || 6, 3), 12);
@@ -319,16 +318,14 @@ liffRouter.get('/trend', async (req, res) => {
 
 // ===== 儲蓄目標 =====
 liffRouter.get('/savings', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   return res.json({ goals: await getSavingsGoals(member.familyId) });
 });
 
 liffRouter.post('/savings', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   const b = (req.body ?? {}) as any;
@@ -340,8 +337,7 @@ liffRouter.post('/savings', async (req, res) => {
 });
 
 liffRouter.put('/savings/:id', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   const b = (req.body ?? {}) as any;
@@ -355,8 +351,7 @@ liffRouter.put('/savings/:id', async (req, res) => {
 
 // 存入/取出（body.delta，正=存入 負=取出）
 liffRouter.post('/savings/:id/adjust', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   const delta = Number((req.body ?? {}).delta);
@@ -370,8 +365,7 @@ liffRouter.post('/savings/:id/adjust', async (req, res) => {
 });
 
 liffRouter.delete('/savings/:id', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   try {
@@ -384,16 +378,14 @@ liffRouter.delete('/savings/:id', async (req, res) => {
 
 // ===== 固定收支 =====
 liffRouter.get('/recurring', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   return res.json({ rules: await getRecurringRules(member.familyId) });
 });
 
 liffRouter.post('/recurring', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   const b = (req.body ?? {}) as any;
@@ -421,8 +413,7 @@ liffRouter.post('/recurring', async (req, res) => {
 });
 
 liffRouter.put('/recurring/:id', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   const b = (req.body ?? {}) as any;
@@ -448,8 +439,7 @@ liffRouter.put('/recurring/:id', async (req, res) => {
 });
 
 liffRouter.delete('/recurring/:id', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
   try {
@@ -462,8 +452,7 @@ liffRouter.delete('/recurring/:id', async (req, res) => {
 
 // 分類清單（給新增/編輯交易的分類選單）
 liffRouter.get('/categories', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -483,8 +472,7 @@ function parsePaidAt(raw: unknown): Date | undefined {
 
 // 手動新增一筆交易（記帳簿表單）
 liffRouter.post('/transactions', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -530,8 +518,7 @@ liffRouter.post('/transactions', async (req, res) => {
 
 // 編輯一筆交易
 liffRouter.patch('/transactions/:id', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -578,8 +565,7 @@ liffRouter.patch('/transactions/:id', async (req, res) => {
 
 // 刪除一筆交易
 liffRouter.delete('/transactions/:id', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
@@ -591,8 +577,7 @@ liffRouter.delete('/transactions/:id', async (req, res) => {
 
 // CSV 匯出（Excel 可開，加 UTF-8 BOM 避免中文亂碼）
 liffRouter.get('/export', async (req, res) => {
-  const lineUserId = req.header('x-line-user-id');
-  if (!lineUserId) return res.status(400).json({ error: 'missing x-line-user-id' });
+  const lineUserId = authedLineUserId(res);
   const member = await resolveMember(lineUserId);
   if (!member) return res.status(404).json({ error: 'not in any family' });
 
