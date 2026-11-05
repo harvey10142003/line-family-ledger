@@ -4,7 +4,8 @@ import { lineClient } from '../client';
 import { findMemberByLineId } from '../../services/family';
 import { logger } from '../../logger';
 import { loadAccessScope, getWritableTransaction } from '../../services/access';
-import { AccessError } from '../../lib/access';
+import { AccessError, type AccessScope } from '../../lib/access';
+import { auditCreateOp, txSubject } from '../../services/audit';
 
 function ntd(n: number): string {
   return `$${n.toLocaleString('en-US')}`;
@@ -25,14 +26,14 @@ export function buildQuickFixReply(txId: string, isShared: boolean) {
 }
 
 // 跟 LIFF 同一層權限（lib/access.ts）：看不到明細的當作找不到；別人個人帳戶上的回「只有本人能改」
-type Found = { member: NonNullable<Awaited<ReturnType<typeof findMemberByLineId>>>; tx: Awaited<ReturnType<typeof getWritableTransaction>> };
+type Found = { member: NonNullable<Awaited<ReturnType<typeof findMemberByLineId>>>; tx: Awaited<ReturnType<typeof getWritableTransaction>>; scope: AccessScope };
 async function findTx(userId: string, txId: string): Promise<Found | null | 'forbidden'> {
   const member = await findMemberByLineId(userId);
   if (!member) return null;
   const scope = await loadAccessScope(member.familyId, member.id);
   try {
     const tx = await getWritableTransaction(scope, txId);
-    return { member, tx };
+    return { member, tx, scope };
   } catch (err) {
     if (err instanceof AccessError) return err.status === 403 ? 'forbidden' : null;
     throw err;
@@ -56,7 +57,20 @@ export async function handleQuickFix(userId: string, replyToken: string, action:
         await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: '找不到這筆紀錄（可能已刪除）。' }] });
         return true;
       }
-      await prisma.transaction.delete({ where: { id: txId } });
+      // 稽核（P0-4）跟刪除同一個交易：沒記到就不刪
+      await prisma.$transaction([
+        prisma.transaction.delete({ where: { id: txId } }),
+        auditCreateOp({
+          familyId: found.member.familyId,
+          actorMemberId: found.member.id,
+          channel: 'LINE',
+          action: 'DELETE',
+          targetType: 'TRANSACTION',
+          targetId: txId,
+          subjectMemberId: txSubject(found.scope, found.tx),
+          detail: { amount: Number(found.tx.amount), paidAt: found.tx.paidAt.toISOString().slice(0, 10) },
+        }),
+      ]);
       await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: '已刪除這筆 🗑' }] });
       return true;
     }
@@ -72,7 +86,19 @@ export async function handleQuickFix(userId: string, replyToken: string, action:
         return true;
       }
       const next = !found.tx.isShared;
-      await prisma.transaction.update({ where: { id: txId }, data: { isShared: next } });
+      await prisma.$transaction([
+        prisma.transaction.update({ where: { id: txId }, data: { isShared: next } }),
+        auditCreateOp({
+          familyId: found.member.familyId,
+          actorMemberId: found.member.id,
+          channel: 'LINE',
+          action: 'EDIT',
+          targetType: 'TRANSACTION',
+          targetId: txId,
+          subjectMemberId: txSubject(found.scope, found.tx),
+          detail: { fields: ['isShared'] },
+        }),
+      ]);
       await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: `已改為「${next ? '共同（分帳）' : '個人（不分帳）'}」✅` }] });
       return true;
     }
@@ -126,7 +152,19 @@ export async function handleQuickFix(userId: string, replyToken: string, action:
         await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: '分類無效。' }] });
         return true;
       }
-      await prisma.transaction.update({ where: { id: txId }, data: { categoryId: catId } });
+      await prisma.$transaction([
+        prisma.transaction.update({ where: { id: txId }, data: { categoryId: catId } }),
+        auditCreateOp({
+          familyId: found.member.familyId,
+          actorMemberId: found.member.id,
+          channel: 'LINE',
+          action: 'EDIT',
+          targetType: 'TRANSACTION',
+          targetId: txId,
+          subjectMemberId: txSubject(found.scope, found.tx),
+          detail: { fields: ['categoryId'] },
+        }),
+      ]);
       await lineClient.replyMessage({
         replyToken,
         messages: [{ type: 'text', text: `已改分類為 ${cat.icon ?? ''} ${cat.name}　${ntd(Number(found.tx.amount))} ✅` }],

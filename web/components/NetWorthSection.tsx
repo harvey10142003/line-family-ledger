@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { apiGet, apiSendResult } from '@/lib/api';
+import PrivacySection from './PrivacySection';
 
 type Comp = { key: string; label: string; amount: number };
 type Owner = { ownerId: string; name: string; assets: number; liabilities: number; netWorth: number };
@@ -277,6 +278,9 @@ export default function NetWorthSection({ userId, month }: { userId: string; mon
           </ul>
         )}
       </section>
+
+      {/* 隱私與存取紀錄（P0-3／P0-4） */}
+      <PrivacySection userId={userId} />
     </div>
   );
 }

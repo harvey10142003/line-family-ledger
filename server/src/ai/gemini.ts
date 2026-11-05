@@ -5,12 +5,16 @@
 // 2. parseReceiptImage: 收據圖片 → 單筆 { totalAmount, items[], merchant, paidAt, suggestedCategory }
 // 3. parseBillFile: PDF 帳單 → 多筆 ParsedTransaction[]（信用卡月帳單、水電瓦斯）
 
-import { GoogleGenerativeAI, SchemaType } from '@google/generative-ai';
-import { config } from '../config';
+// 這支只組 prompt 與 schema、整理回應；真正送出一律走 ai/gemini-gateway.ts（送出前遮罩、寫長度與命中數 log）。
+import type { GenerationConfig } from '@google/generative-ai';
+import { generateWithGemini, SchemaType } from './gemini-gateway';
 import { logger } from '../logger';
 import type { LedgerParseRaw } from '../lib/ledger-plan';
 
-export const gemini = new GoogleGenerativeAI(config.gemini.apiKey);
+// 錯誤只記類型：JSON.parse 的錯誤訊息會夾帶一段回應原文（可能有個資）
+function errKind(err: unknown): string {
+  return err instanceof Error ? err.name : typeof err;
+}
 
 export type ParsedTransaction = {
   amount: number;
@@ -55,48 +59,45 @@ export async function parseLedgerText(
   const str = (description: string) => ({ type: SchemaType.STRING, description });
   const numb = (description: string) => ({ type: SchemaType.NUMBER, description });
 
-  const model = gemini.getGenerativeModel({
-    model: config.gemini.model,
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: SchemaType.OBJECT,
-        properties: {
-          isLedger: { type: SchemaType.BOOLEAN, description: '這句話是否為記帳或轉帳（含金額）' },
-          sharedAccountText: str('整句共用的付款方式原文（例如「現金」「刷台新」→「台新」），沒有就空字串'),
-          sharedDateText: str('整句共用的日期原文（例如句首的「昨天」），沒有就空字串'),
+  const generationConfig: GenerationConfig = {
+    temperature: 0,
+    responseMimeType: 'application/json',
+    responseSchema: {
+      type: SchemaType.OBJECT,
+      properties: {
+        isLedger: { type: SchemaType.BOOLEAN, description: '這句話是否為記帳或轉帳（含金額）' },
+        sharedAccountText: str('整句共用的付款方式原文（例如「現金」「刷台新」→「台新」），沒有就空字串'),
+        sharedDateText: str('整句共用的日期原文（例如句首的「昨天」），沒有就空字串'),
+        items: {
+          type: SchemaType.ARRAY,
+          description: '每一個有獨立金額的收支或轉帳各一筆',
           items: {
-            type: SchemaType.ARRAY,
-            description: '每一個有獨立金額的收支或轉帳各一筆',
-            items: {
-              type: SchemaType.OBJECT,
-              properties: {
-                intent: { type: SchemaType.STRING, format: 'enum', enum: ['EXPENSE', 'INCOME', 'TRANSFER'] },
-                segment: str('原句中屬於這一筆的那一段原文（照抄，不要改寫）'),
-                amount: numb('這一筆的金額（轉帳＝使用者說的總額）。「2萬」＝20000'),
-                categoryName: { type: SchemaType.STRING, format: 'enum', enum: categoryNames.length ? categoryNames : ['其他支出'] },
-                note: str('品項＋商家／地點，去掉金額、日期、付款方式'),
-                dateText: str('這一筆的日期原文（照抄「昨天」「10/3」「上週五」），沒寫就空字串；不要自己換算'),
-                accountText: str('這一筆的付款方式原文，沒提到就空字串'),
-                ownerText: str('只有「幫 X 記」「X 的…」時填 X（成員名稱原文）；「跟 X 一起」不算，空字串'),
-                currencyText: str('外幣幣別原文（美金、日圓、USD），台幣或沒寫就空字串'),
-                transferKind: { type: SchemaType.STRING, format: 'enum', enum: TRANSFER_KIND_ENUM },
-                fromText: str('轉帳的來源原文（帳戶、卡、成員名稱或「我」），沒寫就空字串'),
-                toText: str('轉帳的目的原文，沒寫就空字串'),
-                counterpartyText: str('借出、借入、收回借款的對象（例如「小明」），沒有就空字串'),
-                principal: numb('還貸款有講本金才填，沒講填 0'),
-                interest: numb('有講利息才填，沒講填 0'),
-                fee: numb('有講手續費才填，沒講填 0'),
-              },
-              required: ['intent', 'segment', 'amount', 'categoryName', 'note', 'dateText', 'accountText', 'ownerText', 'currencyText', 'transferKind', 'fromText', 'toText', 'counterpartyText', 'principal', 'interest', 'fee'],
+            type: SchemaType.OBJECT,
+            properties: {
+              intent: { type: SchemaType.STRING, format: 'enum', enum: ['EXPENSE', 'INCOME', 'TRANSFER'] },
+              segment: str('原句中屬於這一筆的那一段原文（照抄，不要改寫）'),
+              amount: numb('這一筆的金額（轉帳＝使用者說的總額）。「2萬」＝20000'),
+              categoryName: { type: SchemaType.STRING, format: 'enum', enum: categoryNames.length ? categoryNames : ['其他支出'] },
+              note: str('品項＋商家／地點，去掉金額、日期、付款方式'),
+              dateText: str('這一筆的日期原文（照抄「昨天」「10/3」「上週五」），沒寫就空字串；不要自己換算'),
+              accountText: str('這一筆的付款方式原文，沒提到就空字串'),
+              ownerText: str('只有「幫 X 記」「X 的…」時填 X（成員名稱原文）；「跟 X 一起」不算，空字串'),
+              currencyText: str('外幣幣別原文（美金、日圓、USD），台幣或沒寫就空字串'),
+              transferKind: { type: SchemaType.STRING, format: 'enum', enum: TRANSFER_KIND_ENUM },
+              fromText: str('轉帳的來源原文（帳戶、卡、成員名稱或「我」），沒寫就空字串'),
+              toText: str('轉帳的目的原文，沒寫就空字串'),
+              counterpartyText: str('借出、借入、收回借款的對象（例如「小明」），沒有就空字串'),
+              principal: numb('還貸款有講本金才填，沒講填 0'),
+              interest: numb('有講利息才填，沒講填 0'),
+              fee: numb('有講手續費才填，沒講填 0'),
             },
+            required: ['intent', 'segment', 'amount', 'categoryName', 'note', 'dateText', 'accountText', 'ownerText', 'currencyText', 'transferKind', 'fromText', 'toText', 'counterpartyText', 'principal', 'interest', 'fee'],
           },
         },
-        required: ['isLedger', 'sharedAccountText', 'sharedDateText', 'items'],
       },
+      required: ['isLedger', 'sharedAccountText', 'sharedDateText', 'items'],
     },
-  });
+  };
 
   const prompt = [
     '你是家庭記帳助理，只負責把使用者的一句話拆成「每一筆是什麼、欄位原文是什麼」。不要換算日期、不要猜帳戶、不要自己算金額。',
@@ -129,8 +130,8 @@ export async function parseLedgerText(
     .join('\n');
 
   try {
-    const result = await model.generateContent(prompt);
-    const parsed = JSON.parse(result.response.text()) as LedgerParseRaw;
+    const { text } = await generateWithGemini({ purpose: 'text-ledger', generationConfig, parts: [prompt] });
+    const parsed = JSON.parse(text) as LedgerParseRaw;
     if (!parsed || typeof parsed !== 'object') return null;
     return {
       isLedger: !!parsed.isLedger,
@@ -140,7 +141,7 @@ export async function parseLedgerText(
     };
   } catch (err) {
     // 只記錯誤，不記使用者原句（可能含個資）
-    logger.error({ err }, 'parseLedgerText failed');
+    logger.error({ error: errKind(err) }, 'parseLedgerText failed');
     return null;
   }
 }
@@ -153,51 +154,48 @@ export async function parseReceiptImage(
 ): Promise<ParsedReceipt | null> {
   const expenseNames = categories.filter((c) => c.type === 'EXPENSE').map((c) => c.name);
 
-  const model = gemini.getGenerativeModel({
-    model: config.gemini.model,
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: SchemaType.OBJECT,
-        properties: {
-          isReceipt: {
-            type: SchemaType.BOOLEAN,
-            description: '這張圖是否為收據／發票／帳單（看得出消費金額）',
-          },
-          totalAmount: {
-            type: SchemaType.NUMBER,
-            description: '消費總金額，正數。看不出來填 0',
-          },
-          merchant: { type: SchemaType.STRING, description: '商家名稱，沒有就空字串' },
-          paidAt: {
-            type: SchemaType.STRING,
-            description: '消費日期，格式 YYYY-MM-DD；看不出來就空字串',
-          },
-          suggestedCategory: {
-            type: SchemaType.STRING,
-            format: 'enum',
-            enum: expenseNames,
-            description: '從支出分類清單挑一個最貼切的',
-          },
+  const generationConfig: GenerationConfig = {
+    temperature: 0,
+    responseMimeType: 'application/json',
+    responseSchema: {
+      type: SchemaType.OBJECT,
+      properties: {
+        isReceipt: {
+          type: SchemaType.BOOLEAN,
+          description: '這張圖是否為收據／發票／帳單（看得出消費金額）',
+        },
+        totalAmount: {
+          type: SchemaType.NUMBER,
+          description: '消費總金額，正數。看不出來填 0',
+        },
+        merchant: { type: SchemaType.STRING, description: '商家名稱，沒有就空字串' },
+        paidAt: {
+          type: SchemaType.STRING,
+          description: '消費日期，格式 YYYY-MM-DD；看不出來就空字串',
+        },
+        suggestedCategory: {
+          type: SchemaType.STRING,
+          format: 'enum',
+          enum: expenseNames,
+          description: '從支出分類清單挑一個最貼切的',
+        },
+        items: {
+          type: SchemaType.ARRAY,
+          description: '品項明細（最多 20 筆），看不出明細可空陣列',
           items: {
-            type: SchemaType.ARRAY,
-            description: '品項明細（最多 20 筆），看不出明細可空陣列',
-            items: {
-              type: SchemaType.OBJECT,
-              properties: {
-                name: { type: SchemaType.STRING },
-                amount: { type: SchemaType.NUMBER },
-                categoryName: { type: SchemaType.STRING, format: 'enum', enum: expenseNames, description: '該品項的支出分類' },
-              },
-              required: ['name', 'amount', 'categoryName'],
+            type: SchemaType.OBJECT,
+            properties: {
+              name: { type: SchemaType.STRING },
+              amount: { type: SchemaType.NUMBER },
+              categoryName: { type: SchemaType.STRING, format: 'enum', enum: expenseNames, description: '該品項的支出分類' },
             },
+            required: ['name', 'amount', 'categoryName'],
           },
         },
-        required: ['isReceipt', 'totalAmount', 'merchant', 'paidAt', 'suggestedCategory', 'items'],
       },
+      required: ['isReceipt', 'totalAmount', 'merchant', 'paidAt', 'suggestedCategory', 'items'],
     },
-  });
+  };
 
   const prompt = [
     '你是家庭記帳助理。請辨識這張收據／發票／帳單的內容。',
@@ -208,11 +206,13 @@ export async function parseReceiptImage(
   ].join('\n');
 
   try {
-    const result = await model.generateContent([
-      prompt,
-      { inlineData: { data: imageBuffer.toString('base64'), mimeType } },
-    ]);
-    const parsed = JSON.parse(result.response.text()) as {
+    const { text } = await generateWithGemini({
+      purpose: 'receipt-ocr',
+      generationConfig,
+      parts: [prompt, { inlineData: { data: imageBuffer, mimeType } }],
+      binaryReason: 'image-ocr-needs-pixels',
+    });
+    const parsed = JSON.parse(text) as {
       isReceipt: boolean;
       totalAmount: number;
       merchant: string;
@@ -243,7 +243,7 @@ export async function parseReceiptImage(
       suggestedCategory,
     };
   } catch (err) {
-    logger.error({ err }, 'parseReceiptImage failed');
+    logger.error({ error: errKind(err) }, 'parseReceiptImage failed');
     return null;
   }
 }
@@ -258,38 +258,35 @@ export async function parseBillFile(
   const expenseNames = categories.filter((c) => c.type === 'EXPENSE').map((c) => c.name);
   const incomeNames = categories.filter((c) => c.type === 'INCOME').map((c) => c.name);
 
-  const model = gemini.getGenerativeModel({
-    model: config.gemini.model,
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: SchemaType.OBJECT,
-        properties: {
-          isBill: {
-            type: SchemaType.BOOLEAN,
-            description: '這份檔案是否為帳單／對帳單／消費明細',
-          },
-          transactions: {
-            type: SchemaType.ARRAY,
-            description: '帳單上的每一筆消費明細',
-            items: {
-              type: SchemaType.OBJECT,
-              properties: {
-                amount: { type: SchemaType.NUMBER, description: '金額正數' },
-                type: { type: SchemaType.STRING, format: 'enum', enum: ['EXPENSE', 'INCOME'] },
-                categoryName: { type: SchemaType.STRING, format: 'enum', enum: categoryNames },
-                note: { type: SchemaType.STRING, description: '商家／品項描述' },
-                paidAt: { type: SchemaType.STRING, description: '消費日期 YYYY-MM-DD，沒有就空字串' },
-              },
-              required: ['amount', 'type', 'categoryName', 'note', 'paidAt'],
+  const generationConfig: GenerationConfig = {
+    temperature: 0,
+    responseMimeType: 'application/json',
+    responseSchema: {
+      type: SchemaType.OBJECT,
+      properties: {
+        isBill: {
+          type: SchemaType.BOOLEAN,
+          description: '這份檔案是否為帳單／對帳單／消費明細',
+        },
+        transactions: {
+          type: SchemaType.ARRAY,
+          description: '帳單上的每一筆消費明細',
+          items: {
+            type: SchemaType.OBJECT,
+            properties: {
+              amount: { type: SchemaType.NUMBER, description: '金額正數' },
+              type: { type: SchemaType.STRING, format: 'enum', enum: ['EXPENSE', 'INCOME'] },
+              categoryName: { type: SchemaType.STRING, format: 'enum', enum: categoryNames },
+              note: { type: SchemaType.STRING, description: '商家／品項描述' },
+              paidAt: { type: SchemaType.STRING, description: '消費日期 YYYY-MM-DD，沒有就空字串' },
             },
+            required: ['amount', 'type', 'categoryName', 'note', 'paidAt'],
           },
         },
-        required: ['isBill', 'transactions'],
       },
+      required: ['isBill', 'transactions'],
     },
-  });
+  };
 
   const prompt = [
     '你是家庭記帳助理。請從這份帳單／對帳單擷取每一筆消費明細。',
@@ -303,11 +300,14 @@ export async function parseBillFile(
   ].join('\n');
 
   try {
-    const result = await model.generateContent([
-      prompt,
-      { inlineData: { data: fileBuffer.toString('base64'), mimeType } },
-    ]);
-    const parsed = JSON.parse(result.response.text()) as {
+    const { text } = await generateWithGemini({
+      purpose: 'bill-pdf',
+      generationConfig,
+      parts: [prompt, { inlineData: { data: fileBuffer, mimeType } }],
+      // P2-1／P2-5 會先在後端用 pdf.js 抽文字、遮罩後改送文字段落；在那之前整份 PDF 原檔送出
+      binaryReason: 'pdf-not-yet-text-extracted',
+    });
+    const parsed = JSON.parse(text) as {
       isBill: boolean;
       transactions: { amount: number; type: string; categoryName: string; note: string; paidAt: string }[];
     };
@@ -333,7 +333,7 @@ export async function parseBillFile(
 
     return items.length > 0 ? items : null;
   } catch (err) {
-    logger.error({ err }, 'parseBillFile failed');
+    logger.error({ error: errKind(err) }, 'parseBillFile failed');
     return null;
   }
 }

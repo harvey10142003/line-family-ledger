@@ -55,6 +55,13 @@ schema 只加不改（`Transaction.fxRate／fxRateDate／fxRateSource` 3 個可�
 已記的外幣交易 `amount` 是當時用臺銀匯率算好的台幣，回退後照舊顯示；只是之後新記的外幣改回 env／固定值估算。
 回退仍要 SKIP_DB_PUSH（舊 schema 的 db push 會想刪新表與 3 欄而失敗）。
 
+### 財務中樞 P0 資安（11-06，feat/finance-hub-p0-security，接在 c834706 之後）多出來的檢查
+
+schema 只加不改（新表 `AuditLog`，預期 SQL 見 `finance-hub-p0-security-expected-db-push.sql`）。舊程式不讀 `AuditLog` 與
+`FamilyMember.legalNameEnc`，**回退不會壞、數字也不變**；回退仍要 SKIP_DB_PUSH（舊 schema 的 db push 會想刪 `AuditLog`）。
+開機建的 trigger／函式（擋 AuditLog 的 UPDATE／DELETE／TRUNCATE）回退後留著無害。回退期間沒有稽核紀錄、不能登記帳單戶名。
+詳見 `finance-hub-p0-security.md`。
+
 ## 回退之後
 
 - 容器是用 override 起來的：之後有人跑 `deploy-sub.sh ledger-server …`／`install.sh` 重建時沒有 override，

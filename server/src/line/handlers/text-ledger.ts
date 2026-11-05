@@ -26,6 +26,7 @@ import { loadAccessScope } from '../../services/access';
 import { getBudgetAlert } from '../../services/budget';
 import { createCreditCard } from '../../services/creditcard';
 import { confirmTransfer, rejectTransfer, replaceTransfer, undoTransfer } from '../../services/transfer';
+import { recordAudit, transferSubjectById } from '../../services/audit';
 import {
   createAccountFromText,
   executeTransfer,
@@ -106,6 +107,16 @@ export async function handleLedgerPendingText(userId: string, replyToken: string
   const scope = await loadAccessScope(s.familyId, s.memberId);
   try {
     const created = await replaceTransfer(s.familyId, s.memberId, s.transferId, { amount: nums[0] }, scope, clock());
+    await recordAudit({
+      familyId: s.familyId,
+      actorMemberId: s.memberId,
+      channel: 'LINE',
+      action: 'EDIT',
+      targetType: 'TRANSFER',
+      targetId: s.transferId,
+      subjectMemberId: await transferSubjectById(scope, created.transfer.id),
+      detail: { fields: ['amount'], replacedBy: created.transfer.id },
+    });
     const card = await cardFor(s.familyId, created.transfer.id, s.memberId);
     await reply(replyToken, [text(`已改成 ${ntd(nums[0])}（舊的那筆已撤銷）`), ...(card ? [transferCarousel([card])] : [])]);
     await notifyCounterpartIfPending(s.familyId, created.transfer.id);
@@ -336,6 +347,7 @@ async function onTransferPostback(member: Member, replyToken: string, action: st
   switch (action) {
     case 'tr_undo': {
       await undoTransfer(member.familyId, member.id, id, scope, now, { withinMs: TEXT_UNDO_WINDOW_MS });
+      await recordAudit({ familyId: member.familyId, actorMemberId: member.id, channel: 'LINE', action: 'UNDO', targetType: 'TRANSFER', targetId: id, subjectMemberId: await transferSubjectById(scope, id) });
       await reply(replyToken, [text('已撤銷這筆轉帳，餘額、帳單、負債都還原了。')]);
       await notifyCounterpartUndone(member.familyId, id);
       return;
@@ -379,6 +391,16 @@ async function onTransferPostback(member: Member, replyToken: string, action: st
       const [kind, cid] = (params.get('c') ?? '').split(':');
       const changes = side === 'from' ? { fromAccountId: cid } : kind === 'CARD' ? { toCreditCardId: cid } : { toAccountId: cid };
       const created = await replaceTransfer(member.familyId, member.id, id, changes, scope, now);
+      await recordAudit({
+        familyId: member.familyId,
+        actorMemberId: member.id,
+        channel: 'LINE',
+        action: 'EDIT',
+        targetType: 'TRANSFER',
+        targetId: id,
+        subjectMemberId: await transferSubjectById(scope, created.transfer.id),
+        detail: { fields: Object.keys(changes), replacedBy: created.transfer.id },
+      });
       const card = await cardFor(member.familyId, created.transfer.id, member.id);
       await reply(replyToken, [text('已改好（舊的那筆已撤銷）'), ...(card ? [transferCarousel([card])] : [])]);
       await notifyCounterpartIfPending(member.familyId, created.transfer.id);
@@ -386,12 +408,14 @@ async function onTransferPostback(member: Member, replyToken: string, action: st
     }
     case 'tr_ok': {
       const r = await confirmTransfer(member.familyId, member.id, id, now);
+      await recordAudit({ familyId: member.familyId, actorMemberId: member.id, channel: 'LINE', action: 'CONFIRM', targetType: 'TRANSFER', targetId: id, subjectMemberId: member.id });
       await reply(replyToken, [text(`已確認，${ntd(Number(r.transfer.amount))} 記進你的帳戶了。`)]);
       await notifyCreator(member.familyId, id, `${member.displayName} 確認了這筆轉帳，兩邊帳戶都已記好。`);
       return;
     }
     case 'tr_no': {
       await rejectTransfer(member.familyId, member.id, id, now);
+      await recordAudit({ familyId: member.familyId, actorMemberId: member.id, channel: 'LINE', action: 'REJECT', targetType: 'TRANSFER', targetId: id, subjectMemberId: member.id });
       await reply(replyToken, [text('已拒絕，這筆不會動到你的帳戶。')]);
       await notifyCreator(member.familyId, id, `${member.displayName} 拒絕了這筆轉帳，沒有記進任何帳戶。`);
       return;

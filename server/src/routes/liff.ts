@@ -26,6 +26,18 @@ import type { AccountType, Family, FamilyMember, RecurringFreq } from '@prisma/c
 import { ymdTaipei, taipeiNoon } from '../lib/time-tw';
 import { createLiffAuth, authedLineUserId, resolveLoginChannelId } from '../lib/liff-auth';
 import { logger } from '../logger';
+import {
+  auditCreateOp,
+  listAuditForMember,
+  recordAudit,
+  recordPersonalViews,
+  transferSubjectById,
+  txSubject,
+  writeAudit,
+  type AuditEvent,
+} from '../services/audit';
+import { getLegalNameStatus, LegalNameInputError, setLegalName } from '../services/legal-name';
+import { FieldKeyError } from '../lib/field-crypto';
 
 // 台北當月 "YYYY-MM"（server 為 UTC，需 +8h 再取年月）
 function currentTaipeiMonth(): string {
@@ -78,6 +90,51 @@ function fail(res: Response, err: unknown) {
   return res.status(400).json({ error: String(err) });
 }
 
+// 帳戶／卡／負債「本身」的修改：歸屬或可見範圍有變＝權限變更，其他＝一般修改（P0-4）
+function instrumentAudit(
+  c: LiffCtx,
+  targetType: 'ACCOUNT' | 'CREDIT_CARD' | 'LIABILITY',
+  id: string,
+  before: { ownerMemberId: string | null; visibility: string } | undefined,
+  after: { ownerMemberId?: string | null; visibility?: string | null } | null | undefined,
+  body: Record<string, unknown>,
+): AuditEvent {
+  const ownerAfter = after && 'ownerMemberId' in after ? after.ownerMemberId ?? null : before?.ownerMemberId ?? null;
+  const visAfter = after && after.visibility ? after.visibility : before?.visibility ?? null;
+  const permChanged = !!before && (ownerAfter !== before.ownerMemberId || visAfter !== before.visibility);
+  return {
+    familyId: c.member.familyId,
+    actorMemberId: c.member.id,
+    channel: 'LIFF',
+    action: permChanged ? 'PERMISSION_CHANGE' : 'EDIT',
+    targetType,
+    targetId: id,
+    subjectMemberId: ownerAfter ?? before?.ownerMemberId ?? null,
+    detail: {
+      fields: Object.keys(body).filter((k) => /^[A-Za-z]{1,30}$/.test(k)).slice(0, 20),
+      ...(permChanged
+        ? { ownerBefore: before?.ownerMemberId ?? null, ownerAfter, visibilityBefore: before?.visibility ?? null, visibilityAfter: visAfter }
+        : {}),
+    },
+  };
+}
+
+// 轉帳列表裡「看得到明細」的那幾端的主人（記 VIEW_PERSONAL 用）
+async function transferListOwners(scope: AccessScope, familyId: string, ids: string[]): Promise<(string | null | undefined)[]> {
+  if (!ids.length) return [];
+  const ends = await prisma.transfer.findMany({
+    where: { id: { in: ids }, familyId },
+    select: { fromAccountId: true, toAccountId: true, toCreditCardId: true, fromLiabilityId: true, toLiabilityId: true },
+  });
+  const owners = new Set<string | null | undefined>();
+  for (const e of ends) {
+    for (const id of [e.fromAccountId, e.toAccountId]) if (id && scope.accountLevel(id) === 'DETAIL') owners.add(scope.account(id)?.ownerMemberId);
+    if (e.toCreditCardId && scope.cardLevel(e.toCreditCardId) === 'DETAIL') owners.add(scope.card(e.toCreditCardId)?.ownerMemberId);
+    for (const id of [e.fromLiabilityId, e.toLiabilityId]) if (id && scope.liabilityLevel(id) === 'DETAIL') owners.add(scope.liability(id)?.ownerMemberId);
+  }
+  return [...owners];
+}
+
 // YYYY-MM-DD → 台北中午 Date；非法回 undefined
 function parsePaidAt(raw: unknown): Date | undefined {
   if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(`${raw}T12:00:00+08:00`);
@@ -116,6 +173,7 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     const { member, scope } = ctx(res);
     const month = resolveMonth(req.query.month);
     const items = await getMonthlyTransactions(member.familyId, month, scope);
+    await recordPersonalViews({ scope, channel: 'LIFF', targetType: 'TRANSACTION_LIST', owners: items.map((t) => txSubject(scope, t)), detail: { month } });
     return res.json({ month, items });
   });
 
@@ -178,8 +236,10 @@ export function buildLiffRouter(auth: RequestHandler): Router {
 
   // 編輯帳戶（名稱/類型/圖示/期初/預設/封存/歸屬/可見範圍）— 只有共同或本人的才能改
   r.put('/accounts/:id', async (req, res) => {
-    const { member, scope } = ctx(res);
+    const c = ctx(res);
+    const { member, scope } = c;
     const body = (req.body ?? {}) as Record<string, unknown>;
+    const before = scope.account(req.params.id);
     try {
       const acc = await updateAccount(
         {
@@ -196,6 +256,7 @@ export function buildLiffRouter(auth: RequestHandler): Router {
         },
         scope,
       );
+      await recordAudit(instrumentAudit(c, 'ACCOUNT', req.params.id, before, acc as any, body));
       return res.json(acc);
     } catch (err) {
       return fail(res, err);
@@ -206,7 +267,15 @@ export function buildLiffRouter(auth: RequestHandler): Router {
   r.get('/transfers', async (req, res) => {
     const { member, scope } = ctx(res);
     const month = resolveMonth(req.query.month);
-    return res.json({ month, items: await getMonthlyTransfers(member.familyId, month, scope) });
+    const items = await getMonthlyTransfers(member.familyId, month, scope);
+    await recordPersonalViews({
+      scope,
+      channel: 'LIFF',
+      targetType: 'TRANSFER_LIST',
+      owners: await transferListOwners(scope, member.familyId, items.map((t) => t.id)),
+      detail: { month },
+    });
+    return res.json({ month, items });
   });
 
   // 建立轉帳（P1-4 轉帳引擎）：kind 不給＝一般帳戶轉帳（舊表單相容）。
@@ -226,7 +295,9 @@ export function buildLiffRouter(auth: RequestHandler): Router {
   r.post('/transfers/:id/undo', async (req, res) => {
     const { member, scope } = ctx(res);
     try {
-      return res.json(await undoTransfer(member.familyId, member.id, req.params.id, scope));
+      const out = await undoTransfer(member.familyId, member.id, req.params.id, scope);
+      await recordAudit({ familyId: member.familyId, actorMemberId: member.id, channel: 'LIFF', action: 'UNDO', targetType: 'TRANSFER', targetId: req.params.id, subjectMemberId: await transferSubjectById(scope, req.params.id) });
+      return res.json(out);
     } catch (err) {
       return fail(res, err);
     }
@@ -247,6 +318,7 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     const { member, scope } = ctx(res);
     try {
       await confirmTransfer(member.familyId, member.id, req.params.id);
+      await recordAudit({ familyId: member.familyId, actorMemberId: member.id, channel: 'LIFF', action: 'CONFIRM', targetType: 'TRANSFER', targetId: req.params.id, subjectMemberId: member.id });
       return res.json(await getTransferView(member.familyId, req.params.id, scope));
     } catch (err) {
       return fail(res, err);
@@ -257,6 +329,7 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     const { member, scope } = ctx(res);
     try {
       await rejectTransfer(member.familyId, member.id, req.params.id);
+      await recordAudit({ familyId: member.familyId, actorMemberId: member.id, channel: 'LIFF', action: 'REJECT', targetType: 'TRANSFER', targetId: req.params.id, subjectMemberId: member.id });
       return res.json(await getTransferView(member.familyId, req.params.id, scope));
     } catch (err) {
       return fail(res, err);
@@ -298,9 +371,13 @@ export function buildLiffRouter(auth: RequestHandler): Router {
   });
 
   r.put('/liabilities/:id', async (req, res) => {
-    const { member, scope } = ctx(res);
+    const c = ctx(res);
+    const { member, scope } = c;
+    const before = scope.liability(req.params.id);
     try {
-      const l = await updateLiability(member.familyId, req.params.id, (req.body ?? {}) as Record<string, unknown>, scope);
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const l = await updateLiability(member.familyId, req.params.id, body, scope);
+      await recordAudit(instrumentAudit(c, 'LIABILITY', req.params.id, before, l as any, body));
       return res.json({ id: l.id });
     } catch (err) {
       return fail(res, err);
@@ -320,7 +397,9 @@ export function buildLiffRouter(auth: RequestHandler): Router {
   r.get('/liabilities/:id/schedule', async (req, res) => {
     const { member, scope } = ctx(res);
     try {
-      return res.json(await getSchedule(member.familyId, req.params.id, scope));
+      const out = await getSchedule(member.familyId, req.params.id, scope);
+      await recordPersonalViews({ scope, channel: 'LIFF', targetType: 'LIABILITY', targetId: req.params.id, owners: [scope.liability(req.params.id)?.ownerMemberId], detail: { view: 'schedule' } });
+      return res.json(out);
     } catch (err) {
       return fail(res, err);
     }
@@ -329,7 +408,9 @@ export function buildLiffRouter(auth: RequestHandler): Router {
   r.get('/liabilities/:id/payments', async (req, res) => {
     const { member, scope } = ctx(res);
     try {
-      return res.json({ items: await getPayments(member.familyId, req.params.id, scope) });
+      const items = await getPayments(member.familyId, req.params.id, scope);
+      await recordPersonalViews({ scope, channel: 'LIFF', targetType: 'LIABILITY', targetId: req.params.id, owners: [scope.liability(req.params.id)?.ownerMemberId], detail: { view: 'payments' } });
+      return res.json({ items });
     } catch (err) {
       return fail(res, err);
     }
@@ -350,7 +431,9 @@ export function buildLiffRouter(auth: RequestHandler): Router {
   r.get('/credit-cards/:id/statements', async (req, res) => {
     const { member, scope } = ctx(res);
     try {
-      return res.json({ items: await getCardStatements(member.familyId, req.params.id, scope) });
+      const items = await getCardStatements(member.familyId, req.params.id, scope);
+      await recordPersonalViews({ scope, channel: 'LIFF', targetType: 'CARD_STATEMENT', targetId: req.params.id, owners: [scope.card(req.params.id)?.ownerMemberId] });
+      return res.json({ items });
     } catch (err) {
       return fail(res, err);
     }
@@ -395,8 +478,10 @@ export function buildLiffRouter(auth: RequestHandler): Router {
 
   // 編輯信用卡 — 只有共同或本人的才能改
   r.put('/credit-cards/:id', async (req, res) => {
-    const { member, scope } = ctx(res);
+    const c = ctx(res);
+    const { member, scope } = c;
     const body = (req.body ?? {}) as Record<string, unknown>;
+    const before = scope.card(req.params.id);
     try {
       const card = await updateCreditCard(
         {
@@ -412,6 +497,7 @@ export function buildLiffRouter(auth: RequestHandler): Router {
         },
         scope,
       );
+      await recordAudit(instrumentAudit(c, 'CREDIT_CARD', req.params.id, before, card as any, body));
       return res.json(card);
     } catch (err) {
       return fail(res, err);
@@ -423,16 +509,25 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     const { member, scope } = ctx(res);
     const { accountId } = (req.body ?? {}) as { accountId?: string | null };
     try {
-      await getWritableTransaction(scope, req.params.id);
+      const old = await getWritableTransaction(scope, req.params.id);
       if (accountId) {
         const acc = await prisma.account.findFirst({ where: { id: accountId, familyId: member.familyId } });
         if (!acc) return res.status(400).json({ error: 'invalid accountId' });
         scope.assertAccountWritable(accountId);
       }
-      const updated = await prisma.transaction.update({
-        where: { id: req.params.id },
-        data: { accountId: accountId ?? null },
-      });
+      const [updated] = await prisma.$transaction([
+        prisma.transaction.update({ where: { id: req.params.id }, data: { accountId: accountId ?? null } }),
+        auditCreateOp({
+          familyId: member.familyId,
+          actorMemberId: member.id,
+          channel: 'LIFF',
+          action: 'EDIT',
+          targetType: 'TRANSACTION',
+          targetId: req.params.id,
+          subjectMemberId: txSubject(scope, old) ?? txSubject(scope, { accountId: accountId ?? null }),
+          detail: { fields: ['accountId'] },
+        }),
+      ]);
       return res.json({ id: updated.id, accountId: updated.accountId });
     } catch (err) {
       if (err instanceof AccessError && err.status === 404) return res.status(404).json({ error: 'transaction not found', code: err.code });
@@ -491,6 +586,7 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     const { member } = ctx(res);
     try {
       await deleteSavingsGoal(member.familyId, req.params.id);
+      await recordAudit({ familyId: member.familyId, actorMemberId: member.id, channel: 'LIFF', action: 'DELETE', targetType: 'SAVINGS_GOAL', targetId: req.params.id });
       return res.json({ ok: true });
     } catch (err) {
       return fail(res, err);
@@ -563,6 +659,7 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     const { member, scope } = ctx(res);
     try {
       await deleteRecurringRule(member.familyId, req.params.id, scope);
+      await recordAudit({ familyId: member.familyId, actorMemberId: member.id, channel: 'LIFF', action: 'DELETE', targetType: 'RECURRING', targetId: req.params.id });
       return res.json({ ok: true });
     } catch (err) {
       return fail(res, err);
@@ -634,8 +731,9 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     const { member, scope } = ctx(res);
     const b = (req.body ?? {}) as Record<string, unknown>;
     const data: Record<string, unknown> = {};
+    let old: Awaited<ReturnType<typeof getWritableTransaction>>;
     try {
-      await getWritableTransaction(scope, req.params.id);
+      old = await getWritableTransaction(scope, req.params.id);
 
       if (typeof b.categoryId === 'string') {
         const cat = await prisma.category.findFirst({ where: { id: b.categoryId, familyId: member.familyId } });
@@ -674,19 +772,44 @@ export function buildLiffRouter(auth: RequestHandler): Router {
       return fail(res, err);
     }
 
-    await prisma.transaction.update({ where: { id: req.params.id }, data });
+    await prisma.$transaction([
+      prisma.transaction.update({ where: { id: req.params.id }, data }),
+      auditCreateOp({
+        familyId: member.familyId,
+        actorMemberId: member.id,
+        channel: 'LIFF',
+        action: 'EDIT',
+        targetType: 'TRANSACTION',
+        targetId: req.params.id,
+        subjectMemberId: txSubject(scope, old) ?? txSubject(scope, data as { accountId?: string | null; creditCardId?: string | null }),
+        detail: { fields: Object.keys(data) },
+      }),
+    ]);
     return res.json({ ok: true });
   });
 
   // 刪除一筆交易 — D10
   r.delete('/transactions/:id', async (req, res) => {
-    const { scope } = ctx(res);
+    const { member, scope } = ctx(res);
+    let old: Awaited<ReturnType<typeof getWritableTransaction>>;
     try {
-      await getWritableTransaction(scope, req.params.id);
+      old = await getWritableTransaction(scope, req.params.id);
     } catch (err) {
       return fail(res, err);
     }
-    await prisma.transaction.delete({ where: { id: req.params.id } });
+    await prisma.$transaction([
+      prisma.transaction.delete({ where: { id: req.params.id } }),
+      auditCreateOp({
+        familyId: member.familyId,
+        actorMemberId: member.id,
+        channel: 'LIFF',
+        action: 'DELETE',
+        targetType: 'TRANSACTION',
+        targetId: req.params.id,
+        subjectMemberId: txSubject(scope, old),
+        detail: { amount: Number(old.amount), paidAt: old.paidAt.toISOString().slice(0, 10) },
+      }),
+    ]);
     return res.json({ ok: true });
   });
 
@@ -695,6 +818,14 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     const { member, scope } = ctx(res);
     const month = resolveMonth(req.query.month);
     const items = await getMonthlyTransactions(member.familyId, month, scope);
+    // 匯出一定要先記到稽核才給檔案（fail-closed）；連帶記「看到了誰的個人明細」（每次都記，不去重）
+    try {
+      await writeAudit({ familyId: member.familyId, actorMemberId: member.id, channel: 'LIFF', action: 'EXPORT_CSV', targetType: 'EXPORT', detail: { month, rows: items.length } });
+    } catch (err) {
+      logger.error({ error: err instanceof Error ? err.message : String(err) }, 'export audit failed');
+      return res.status(503).json({ error: 'audit unavailable', code: 'audit_unavailable' });
+    }
+    await recordPersonalViews({ scope, channel: 'LIFF', targetType: 'EXPORT', owners: items.map((t) => txSubject(scope, t)), detail: { month }, dedupe: false });
 
     const esc = (v: unknown) => {
       const s = String(v ?? '');
@@ -720,6 +851,38 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="ledger-${month}.csv"`);
     return res.send(csv);
+  });
+
+  // ===== 稽核紀錄（P0-4）：mine＝別人看過／動過我的東西；family＝共同的＋跟我有關的 =====
+  r.get('/audit-log', async (req, res) => {
+    const { member } = ctx(res);
+    const kind = req.query.scope === 'family' ? 'family' : 'mine';
+    const limit = Number(req.query.limit) || 100;
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ scope: kind, items: await listAuditForMember(member.familyId, member.id, kind, limit) });
+  });
+
+  // ===== 真實姓名（帳單戶名，D12）：只有本人；只回遮罩 =====
+  r.get('/me/legal-name', async (_req, res) => {
+    const { member } = ctx(res);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(await getLegalNameStatus(member.id));
+  });
+
+  // body: { legalName: string | null }（null 或空字串＝清除）。金鑰不可用 → 503，不寫入
+  r.put('/me/legal-name', async (req, res) => {
+    const { member } = ctx(res);
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      return res.json(await setLegalName({ familyId: member.familyId, memberId: member.id, value: (req.body ?? {}).legalName ?? null, channel: 'LIFF' }));
+    } catch (err) {
+      if (err instanceof FieldKeyError) {
+        logger.error({ reason: err.message }, 'legal name write blocked: field key unavailable');
+        return res.status(503).json({ error: 'encryption key unavailable', code: err.code });
+      }
+      if (err instanceof LegalNameInputError) return res.status(400).json({ error: err.message, code: 'invalid_legal_name' });
+      throw err;
+    }
   });
 
   return r;

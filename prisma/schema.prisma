@@ -567,3 +567,24 @@ model FxRateDaily {
 
   @@unique([currency, rateDate])
 }
+
+// ===== 稽核紀錄（財務中樞 P0-4，規格 6.8）=====
+// 只加不改：程式只會 create（棘輪 audit-append-only.test.ts 守門），資料庫另有 trigger 擋 UPDATE／DELETE／TRUNCATE
+// （開機時 ensureAuditAppendOnly() 建立）。不掛外鍵：成員、帳戶刪掉後紀錄仍要留著。
+// detail 只放 id、欄位名稱、列舉值、筆數，不放備註、姓名、金額以外的原文（services/audit.ts 會擋）。
+model AuditLog {
+  id              String   @id @default(cuid())
+  familyId        String
+  actorMemberId   String? // 誰做的；null＝系統（排程、金鑰輪替）
+  channel         String // LIFF | LINE | SYSTEM
+  action          String // VIEW_PERSONAL | EDIT | DELETE | EXPORT_CSV | PERMISSION_CHANGE | ...（services/audit.ts）
+  targetType      String // TRANSACTION | ACCOUNT | CREDIT_CARD | LIABILITY | TRANSFER | MEMBER | ...
+  targetId        String?
+  subjectMemberId String? // 被存取的是誰的東西（個人帳戶的主人）；共同的＝null
+  detail          Json?
+  createdAt       DateTime @default(now())
+
+  @@index([familyId, createdAt])
+  @@index([subjectMemberId, createdAt])
+  @@index([actorMemberId, createdAt])
+}

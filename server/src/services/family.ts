@@ -1,5 +1,6 @@
 import { prisma } from '../prisma';
 import { DEFAULT_CATEGORIES } from './categories';
+import { recordAudit } from './audit';
 import type { Family, FamilyMember } from '@prisma/client';
 
 // 6 碼大寫英數家庭碼，避開易混淆字元（0/O/1/I）
@@ -89,6 +90,8 @@ export async function joinFamily(params: {
       role: 'MEMBER',
     },
   });
+  // 稽核（P0-4）：多一個人看得到全家共同的帳
+  await recordAudit({ familyId: family.id, actorMemberId: member.id, channel: 'LINE', action: 'MEMBER_JOIN', targetType: 'MEMBER', targetId: member.id, detail: { role: 'MEMBER' } });
 
   return { family, member };
 }

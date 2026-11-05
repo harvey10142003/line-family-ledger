@@ -58,6 +58,7 @@ npm run dev
 - `LINE_LOGIN_CHANNEL_ID`：LIFF 所屬 LINE Login channel id。`/api/liff/*` 一律要求 `Authorization: Bearer <liff.getIDToken()>`，後端打 LINE `oauth2/v2.1/verify` 驗證（client_id＝此值）後取 sub 當使用者；未設時取 `LINE_LIFF_ID` 前綴。LIFF app scope 必須勾 `openid`
 - `GEMINI_API_KEY`：Google Gemini 2.5 Flash（文字 parse + 拍照辨識）
 - `DATABASE_URL`：PostgreSQL 連線字串
+- `LEDGER_FIELD_KEY`（＋`LEDGER_FIELD_KEY_VERSION`、輪替時的 `LEDGER_FIELD_KEYS_OLD`）：敏感欄位（帳單戶名）AES-256-GCM 金鑰；沒設時寫敏感欄位回 503。見 `docs/deploy/finance-hub-p0-security.md`
 
 ## 目錄結構
 
