@@ -6,6 +6,7 @@ import { parseReceiptImage } from '../../ai/gemini';
 import { recordTransaction, recordTransactionsBatch } from '../../services/transaction';
 import { getBudgetAlert } from '../../services/budget';
 import { resolveAccountId } from '../../services/account';
+import { loadAccessScope } from '../../services/access';
 import { logger } from '../../logger';
 
 // LINE blob client 回傳 Readable stream，收集成 Buffer
@@ -67,10 +68,11 @@ export async function handleImageMessage(
   }
 
   const paidAt = receipt.paidAt ? new Date(`${receipt.paidAt}T12:00:00+08:00`) : undefined;
-  const accountId = await resolveAccountId(member.familyId, null);
+  const scope = await loadAccessScope(member.familyId, member.id);
+  const accountId = await resolveAccountId(member.familyId, null, scope); // 只記到共同或自己的帳戶（D10）
   const merchant = receipt.merchant ? `（${receipt.merchant}）` : '';
   const dateLine = receipt.paidAt ? `\n📅 ${receipt.paidAt}` : '';
-  const alert = await getBudgetAlert(member.familyId);
+  const alert = await getBudgetAlert(member.familyId, scope);
   const alertLine = alert ? `\n\n${alert}` : '';
 
   // 有細項（≥2 筆）→ 逐項記帳；否則記總額一筆

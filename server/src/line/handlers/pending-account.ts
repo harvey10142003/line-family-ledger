@@ -4,9 +4,11 @@ import { lineClient } from '../client';
 import { createAccount } from '../../services/account';
 import { createCreditCard } from '../../services/creditcard';
 import { logger } from '../../logger';
+import { loadAccessScope } from '../../services/access';
 
 type PendingAccount = {
   familyId: string;
+  memberId: string; // 說話者：同名的若是別人的個人帳戶／卡，不能把交易綁過去（D10）
   name: string;
   txnIds: string[]; // 剛記到預設帳戶的交易，確認後改綁新帳戶
 };
@@ -46,6 +48,10 @@ export async function confirmPendingCreditCard(userId: string, replyToken: strin
   pending.delete(userId);
   try {
     let card = await prisma.creditCard.findFirst({ where: { familyId: p.familyId, name: p.name } });
+    if (card && !(await loadAccessScope(p.familyId, p.memberId)).canWriteCard(card.id)) {
+      await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: `「${p.name}」是其他成員的個人信用卡，只有本人能記帳；剛剛的記帳維持在預設帳戶。` }] });
+      return;
+    }
     if (!card) card = await createCreditCard({ familyId: p.familyId, name: p.name }); // 預設額度0/結算1/繳費15
     if (p.txnIds.length > 0) {
       await prisma.transaction.updateMany({ where: { id: { in: p.txnIds } }, data: { creditCardId: card.id, accountId: null } });
@@ -76,6 +82,10 @@ export async function confirmPendingAccount(userId: string, replyToken: string):
   try {
     // 已存在同名就直接用，否則建立（type 預設 OTHER）
     let acc = await prisma.account.findFirst({ where: { familyId: p.familyId, name: p.name } });
+    if (acc && !(await loadAccessScope(p.familyId, p.memberId)).canWriteAccount(acc.id)) {
+      await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: `「${p.name}」是其他成員的個人帳戶，只有本人能記帳；剛剛的記帳維持在預設帳戶。` }] });
+      return;
+    }
     if (!acc) acc = await createAccount({ familyId: p.familyId, name: p.name, type: 'OTHER', icon: '👛' });
 
     // 把剛記的交易改綁到新帳戶

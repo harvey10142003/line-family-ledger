@@ -244,8 +244,8 @@ export default function Home() {
         {/* ===== 帳戶 ===== */}
         {tab === 'accounts' && userId && (
           <>
-            <AccountsSection userId={userId} />
-            <CreditCardsSection userId={userId} />
+            <AccountsSection userId={userId} memberId={me.member.id} />
+            <CreditCardsSection userId={userId} memberId={me.member.id} />
           </>
         )}
 

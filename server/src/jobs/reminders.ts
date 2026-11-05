@@ -11,6 +11,28 @@ import { logger } from '../logger';
 import { getMonthlySummary } from '../services/transaction';
 import { getBudgets } from '../services/budget';
 import { getCreditCards } from '../services/creditcard';
+import { loadAccessScope } from '../services/access';
+import type { AccessScope } from '../lib/access';
+
+type FamilyWithMembers = { id: string; members: { id: string; lineUserId: string }[] };
+
+// 依「每位收件者自己的可見範圍」各算一次訊息（規格 6.2：推給 Apple 的不能有 Shark 的 OWNER_ONLY），
+// 內容完全相同的收件者合併成一次 multicast。全家都是共同帳戶時＝跟以前一樣整家推一次。
+// build 回 null＝這位不用推。回傳實際推了幾組。
+export async function pushPerViewer(fam: FamilyWithMembers, build: (scope: AccessScope) => Promise<any[] | null>): Promise<number> {
+  const groups = new Map<string, { to: string[]; messages: any[] }>();
+  for (const m of fam.members) {
+    const scope = await loadAccessScope(fam.id, m.id);
+    const messages = await build(scope);
+    if (!messages || messages.length === 0) continue;
+    const key = JSON.stringify(messages);
+    const g = groups.get(key);
+    if (g) g.to.push(m.lineUserId);
+    else groups.set(key, { to: [m.lineUserId], messages });
+  }
+  for (const g of groups.values()) await pushMessages(g.to, g.messages);
+  return groups.size;
+}
 
 function ntd(n: number): string {
   return `$${n.toLocaleString('en-US')}`;
@@ -126,12 +148,12 @@ export async function sendMonthlySummaries(month?: string): Promise<{ families: 
 
   let pushed = 0;
   for (const fam of families) {
-    const summary = await getMonthlySummary(fam.id, target);
-    if (summary.totalExpense === 0 && summary.totalIncome === 0) continue; // 沒紀錄不打擾
-
-    const flex = buildMonthlyFlex(fam.name, target, summary);
-    await pushMessages(fam.members.map((m) => m.lineUserId), [flex]);
-    pushed++;
+    const groups = await pushPerViewer(fam, async (scope) => {
+      const summary = await getMonthlySummary(fam.id, target, scope);
+      if (summary.totalExpense === 0 && summary.totalIncome === 0) return null; // 沒紀錄不打擾
+      return [buildMonthlyFlex(fam.name, target, summary)];
+    });
+    if (groups > 0) pushed++;
   }
 
   logger.info({ target, families: families.length, pushed }, 'monthly summaries sent');
@@ -148,20 +170,22 @@ export async function sendCreditCardDueReminders(daysBefore = 3): Promise<{ fami
 
   let pushed = 0;
   for (const fam of families) {
-    const cards = await getCreditCards(fam.id);
-    const due = cards.filter((c) => {
-      const d = new Date(`${c.nextDueDate}T00:00:00+08:00`);
-      const days = Math.round((d.getTime() - today.getTime()) / 86400000);
-      return days === daysBefore;
+    const groups = await pushPerViewer(fam, async (scope) => {
+      const cards = await getCreditCards(fam.id, false, scope); // 看不到的卡不提醒
+      const due = cards.filter((c) => {
+        const d = new Date(`${c.nextDueDate}T00:00:00+08:00`);
+        const days = Math.round((d.getTime() - today.getTime()) / 86400000);
+        return days === daysBefore;
     });
-    if (due.length === 0) continue;
+    if (due.length === 0) return null;
 
     const lines = due
       .map((c) => `${c.icon ?? '💳'} ${c.name}　本期應繳約 ${ntd(c.cycleUsed)}（${c.nextDueDate.slice(5)} 繳款）`)
       .join('\n');
     const text = `🔔 信用卡繳費提醒（${daysBefore} 天後到期）\n\n${lines}\n\n記得繳款別忘了～`;
-    await pushToFamily(fam.members.map((m) => m.lineUserId), text);
-    pushed++;
+    return [{ type: 'text', text }];
+    });
+    if (groups > 0) pushed++;
   }
 
   logger.info({ daysBefore, families: families.length, pushed }, 'credit card due reminders sent');
@@ -178,30 +202,32 @@ export async function sendWeeklyBudgetDigests(): Promise<{ families: number; pus
     const { overall } = await getBudgets(fam.id);
     if (overall == null || overall <= 0) continue;
 
-    const summary = await getMonthlySummary(fam.id, month);
-    const pct = Math.round((summary.totalExpense / overall) * 100);
-    const remain = Math.round((overall - summary.totalExpense) * 100) / 100;
+    const groups = await pushPerViewer(fam, async (scope) => {
+      const summary = await getMonthlySummary(fam.id, month, scope); // 已花依收件者的可見範圍
+      const pct = Math.round((summary.totalExpense / overall) * 100);
+      const remain = Math.round((overall - summary.totalExpense) * 100) / 100;
 
-    const head =
-      pct >= 100
-        ? `⚠️ 本月已超出預算（${pct}%）`
-        : pct >= 80
-          ? `🔔 本月預算已用 ${pct}%，要留意囉`
-          : `本月預算使用 ${pct}%，狀況良好 👍`;
+      const head =
+        pct >= 100
+          ? `⚠️ 本月已超出預算（${pct}%）`
+          : pct >= 80
+            ? `🔔 本月預算已用 ${pct}%，要留意囉`
+            : `本月預算使用 ${pct}%，狀況良好 👍`;
 
-    const text = [
-      `📅 ${fam.name}　預算週報`,
-      ``,
-      head,
-      `已花 ${ntd(summary.totalExpense)} / 預算 ${ntd(overall)}`,
-      remain >= 0 ? `本月還可花 ${ntd(remain)}` : `已超支 ${ntd(-remain)}`,
-      ``,
-      `查看明細 👉`,
-      liffUrl(),
-    ].join('\n');
+      const text = [
+        `📅 ${fam.name}　預算週報`,
+        ``,
+        head,
+        `已花 ${ntd(summary.totalExpense)} / 預算 ${ntd(overall)}`,
+        remain >= 0 ? `本月還可花 ${ntd(remain)}` : `已超支 ${ntd(-remain)}`,
+        ``,
+        `查看明細 👉`,
+        liffUrl(),
+      ].join('\n');
 
-    await pushToFamily(fam.members.map((m) => m.lineUserId), text);
-    pushed++;
+      return [{ type: 'text', text }];
+    });
+    if (groups > 0) pushed++;
   }
 
   logger.info({ month, families: families.length, pushed }, 'weekly budget digests sent');

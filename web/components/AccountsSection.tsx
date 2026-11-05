@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { apiGet, apiPost, apiPut } from '@/lib/api';
+import { OwnershipFields, OwnerBadges, ownershipBody, type Owned, type Visibility } from './OwnershipFields';
 
 type AccountType = 'CASH' | 'BANK' | 'CREDIT_CARD' | 'EPAYMENT' | 'OTHER';
 
@@ -15,7 +16,7 @@ type Account = {
   isDefault: boolean;
   isArchived: boolean;
   sortOrder: number;
-};
+} & Owned;
 
 const TYPE_META: Record<AccountType, { label: string; icon: string }> = {
   CASH: { label: '現金', icon: '💵' },
@@ -33,7 +34,7 @@ function ntd(n: number): string {
   return n < 0 ? `-${s}` : s;
 }
 
-export default function AccountsSection({ userId }: { userId: string }) {
+export default function AccountsSection({ userId, memberId }: { userId: string; memberId: string }) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<'none' | 'add' | 'transfer'>('none');
@@ -44,6 +45,8 @@ export default function AccountsSection({ userId }: { userId: string }) {
   const [fType, setFType] = useState<AccountType>('CASH');
   const [fOpening, setFOpening] = useState('');
   const [fDefault, setFDefault] = useState(false);
+  const [fMine, setFMine] = useState(false);
+  const [fVis, setFVis] = useState<Visibility>('FAMILY_TOTAL_ONLY');
   const [busy, setBusy] = useState(false);
 
   // 轉帳表單
@@ -72,11 +75,16 @@ export default function AccountsSection({ userId }: { userId: string }) {
     setFType('CASH');
     setFOpening('');
     setFDefault(false);
+    setFMine(false);
+    setFVis('FAMILY_TOTAL_ONLY');
     setMode('add');
   };
 
   const openEdit = (a: Account) => {
+    if (a.canEdit === false) return; // D10：家人的個人帳戶只能看，不能改
     setEditing(a);
+    setFMine(a.ownerMemberId === memberId);
+    setFVis(a.ownerMemberId ? a.visibility ?? 'FAMILY_TOTAL_ONLY' : 'FAMILY_TOTAL_ONLY');
     setFName(a.name);
     setFType(a.type);
     setFOpening(String(a.openingBalance));
@@ -95,6 +103,7 @@ export default function AccountsSection({ userId }: { userId: string }) {
           type: fType,
           openingBalance: opening,
           isDefault: fDefault,
+          ...ownershipBody(fMine, fVis, memberId),
         });
       } else {
         await apiPost('/api/liff/accounts', userId, {
@@ -102,6 +111,7 @@ export default function AccountsSection({ userId }: { userId: string }) {
           type: fType,
           icon: TYPE_META[fType].icon,
           openingBalance: opening,
+          ...ownershipBody(fMine, fVis, memberId),
         });
       }
       setMode('none');
@@ -158,11 +168,12 @@ export default function AccountsSection({ userId }: { userId: string }) {
         <ul className="space-y-1.5">
           {accounts.map((a) => (
             <li key={a.id}>
-              <button onClick={() => openEdit(a)} className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left hover:bg-gray-50">
+              <button onClick={() => openEdit(a)} disabled={a.canEdit === false} className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent">
                 <span className="flex items-center gap-2 text-sm">
                   <span>{a.icon ?? TYPE_META[a.type].icon}</span>
                   {a.name}
                   {a.isDefault && <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-500">預設</span>}
+                  <OwnerBadges item={a} memberId={memberId} />
                 </span>
                 <span className={`text-sm font-medium ${a.balance < 0 ? 'text-red-500' : 'text-gray-800'}`}>{ntd(a.balance)}</span>
               </button>
@@ -184,6 +195,7 @@ export default function AccountsSection({ userId }: { userId: string }) {
             ))}
           </div>
           <input value={fOpening} onChange={(e) => setFOpening(e.target.value)} type="number" inputMode="numeric" placeholder="期初餘額（信用卡可留 0）" className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm" />
+          <OwnershipFields mine={fMine} visibility={fVis} onChange={(n) => { setFMine(n.mine); setFVis(n.visibility); }} />
           {editing && (
             <label className="flex items-center gap-2 text-xs text-gray-600">
               <input type="checkbox" checked={fDefault} onChange={(e) => setFDefault(e.target.checked)} />
@@ -209,7 +221,8 @@ export default function AccountsSection({ userId }: { userId: string }) {
           <div className="flex items-center gap-2">
             <select value={tFrom} onChange={(e) => setTFrom(e.target.value)} className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-2 text-sm">
               <option value="">從…</option>
-              {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              {/* 只能從共同或自己的帳戶轉出（D10） */}
+              {accounts.filter((a) => a.canEdit !== false).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
             <span className="text-gray-400">→</span>
             <select value={tTo} onChange={(e) => setTTo(e.target.value)} className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-2 text-sm">

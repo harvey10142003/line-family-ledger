@@ -19,11 +19,12 @@ type TxItem = {
   accountName: string | null;
   accountIcon: string | null;
   paidAt: string;
+  canEdit?: boolean; // D10：記在家人個人帳戶上的只能看
 };
 
 type Category = { id: string; name: string; icon: string | null; type: TxType };
-type Account = { id: string; name: string; icon: string | null };
-type Card = { id: string; name: string; icon: string | null };
+type Account = { id: string; name: string; icon: string | null; canEdit?: boolean };
+type Card = { id: string; name: string; icon: string | null; canEdit?: boolean };
 
 function ntd(n: number): string {
   return `$${n.toLocaleString('en-US')}`;
@@ -83,8 +84,9 @@ export default function TransactionsSection({
       apiGet<{ cards: Card[] }>('/api/liff/credit-cards', userId),
     ]);
     setCats(c.categories);
-    setAccounts(a.accounts);
-    setCards(cc.cards);
+    // 付款方式只能選共同或自己的（家人的個人帳戶不能記進去）
+    setAccounts(a.accounts.filter((x) => x.canEdit !== false));
+    setCards(cc.cards.filter((x) => x.canEdit !== false));
   }, [userId]);
 
   useEffect(() => {
@@ -107,6 +109,7 @@ export default function TransactionsSection({
   };
 
   const openEdit = (t: TxItem) => {
+    if (t.canEdit === false) return;
     setEditing(t);
     setFType(t.type);
     const c = cats.find((x) => x.name === t.categoryName && x.type === t.type);
@@ -210,7 +213,7 @@ export default function TransactionsSection({
           <ul className="divide-y divide-gray-100">
             {filtered.map((t) => (
               <li key={t.id}>
-                <button onClick={() => openEdit(t)} className="flex w-full items-center justify-between py-2.5 px-1 text-left hover:bg-gray-50">
+                <button onClick={() => openEdit(t)} disabled={t.canEdit === false} className="flex w-full items-center justify-between py-2.5 px-1 text-left hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent">
                   <div className="min-w-0">
                     <p className="truncate text-sm">
                       {t.categoryIcon ?? ''} {t.note || t.categoryName}
@@ -219,6 +222,7 @@ export default function TransactionsSection({
                     <p className="text-xs text-gray-400">
                       {t.paidAt.slice(5, 10)}　{t.memberName}
                       {t.accountName ? `　${t.accountIcon ?? ''}${t.accountName}` : ''}
+                      {t.canEdit === false && '　僅本人可修改'}
                     </p>
                   </div>
                   <span className={`shrink-0 pl-2 font-medium ${t.type === 'INCOME' ? 'text-emerald-500' : 'text-gray-800'}`}>

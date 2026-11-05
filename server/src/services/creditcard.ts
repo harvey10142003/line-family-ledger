@@ -1,5 +1,7 @@
 import { prisma } from '../prisma';
 import { ymdTaipei } from '../lib/time-tw';
+import type { Visibility } from '@prisma/client';
+import type { AccessLevel, AccessScope } from '../lib/access';
 
 // 台北「今天」的 y/m/d
 function taipeiToday(now: Date = new Date()): { y: number; m: number; d: number } {
@@ -52,13 +54,22 @@ export type CreditCardStatus = {
   nextDueDate: string; // 下次繳費日 YYYY-MM-DD
   isArchived: boolean;
   sortOrder: number;
+  // 財務中樞 P1-2：歸屬與可見範圍
+  ownerMemberId: string | null;
+  ownerName: string | null;
+  visibility: Visibility;
+  access: AccessLevel;
+  canEdit: boolean;
 };
 
-export async function getCreditCards(familyId: string, includeArchived = false): Promise<CreditCardStatus[]> {
-  const cards = await prisma.creditCard.findMany({
+// 依 scope：別人 OWNER_ONLY 的卡不列；只看總額的列出本期已用（本來就是總額）。
+export async function getCreditCards(familyId: string, includeArchived: boolean, scope: AccessScope): Promise<CreditCardStatus[]> {
+  const all = await prisma.creditCard.findMany({
     where: { familyId, ...(includeArchived ? {} : { isArchived: false }) },
     orderBy: { sortOrder: 'asc' },
+    include: { owner: { select: { displayName: true } } },
   });
+  const cards = all.filter((c) => scope.cardLevel(c.id) !== 'NONE');
   if (cards.length === 0) return [];
 
   const txs = await prisma.transaction.findMany({
@@ -89,6 +100,11 @@ export async function getCreditCards(familyId: string, includeArchived = false):
       nextDueDate: nextDueDate(c.dueDay),
       isArchived: c.isArchived,
       sortOrder: c.sortOrder,
+      ownerMemberId: c.ownerMemberId,
+      ownerName: c.owner?.displayName ?? null,
+      visibility: c.visibility,
+      access: scope.cardLevel(c.id),
+      canEdit: scope.canWriteCard(c.id),
     };
   });
 }
@@ -106,6 +122,9 @@ export async function createCreditCard(params: {
   statementDay?: number;
   dueDay?: number;
   icon?: string | null;
+  // 歸屬：呼叫端先用 scope.resolveOwnership 正規化；不給＝共同（舊行為）
+  ownerMemberId?: string | null;
+  visibility?: Visibility;
 }) {
   const max = await prisma.creditCard.aggregate({ where: { familyId: params.familyId }, _max: { sortOrder: true } });
   return prisma.creditCard.create({
@@ -117,21 +136,32 @@ export async function createCreditCard(params: {
       dueDay: clampDay(params.dueDay, 15),
       icon: params.icon ?? '💳',
       sortOrder: (max._max.sortOrder ?? 0) + 1,
+      ...(params.ownerMemberId ? { ownerMemberId: params.ownerMemberId, visibility: params.visibility ?? 'FAMILY_TOTAL_ONLY' } : {}),
     },
   });
 }
 
-export async function updateCreditCard(params: {
-  familyId: string;
-  cardId: string;
-  name?: string;
-  creditLimit?: number;
-  statementDay?: number;
-  dueDay?: number;
-  isArchived?: boolean;
-}) {
+export async function updateCreditCard(
+  params: {
+    familyId: string;
+    cardId: string;
+    name?: string;
+    creditLimit?: number;
+    statementDay?: number;
+    dueDay?: number;
+    isArchived?: boolean;
+    ownerMemberId?: unknown;
+    visibility?: unknown;
+  },
+  scope: AccessScope,
+) {
   const card = await prisma.creditCard.findFirst({ where: { id: params.cardId, familyId: params.familyId } });
   if (!card) throw new Error('credit card not found');
+  scope.assertCardWritable(card.id); // D10
+  const ownership =
+    params.ownerMemberId !== undefined || params.visibility !== undefined
+      ? scope.resolveOwnership(card, { ownerMemberId: params.ownerMemberId, visibility: params.visibility })
+      : null;
   return prisma.creditCard.update({
     where: { id: params.cardId },
     data: {
@@ -140,13 +170,14 @@ export async function updateCreditCard(params: {
       ...(params.statementDay !== undefined ? { statementDay: clampDay(params.statementDay, card.statementDay) } : {}),
       ...(params.dueDay !== undefined ? { dueDay: clampDay(params.dueDay, card.dueDay) } : {}),
       ...(params.isArchived !== undefined ? { isArchived: params.isArchived } : {}),
+      ...(ownership ?? {}),
     },
   });
 }
 
-// 記帳時把付款名稱對應到信用卡（回 cardId 或 null）
-export async function resolveCreditCardId(familyId: string, name?: string | null): Promise<string | null> {
+// 記帳時把付款名稱對應到信用卡（回 cardId 或 null）。只回說話者可以記進去的卡（共同或自己的，D10）。
+export async function resolveCreditCardId(familyId: string, name: string | null | undefined, scope: AccessScope): Promise<string | null> {
   if (!name) return null;
   const hit = await prisma.creditCard.findFirst({ where: { familyId, name, isArchived: false } });
-  return hit?.id ?? null;
+  return hit && scope.canWriteCard(hit.id) ? hit.id : null;
 }

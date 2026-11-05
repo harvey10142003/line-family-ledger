@@ -22,10 +22,11 @@ type Rule = {
   accountId: string | null;
   creditCardId: string | null;
   payName: string | null;
+  canEdit?: boolean; // D10：付款工具是家人的個人帳戶時只能看
 };
 type Category = { id: string; name: string; icon: string | null; type: TxType };
-type Account = { id: string; name: string; icon: string | null };
-type Card = { id: string; name: string; icon: string | null };
+type Account = { id: string; name: string; icon: string | null; canEdit?: boolean };
+type Card = { id: string; name: string; icon: string | null; canEdit?: boolean };
 
 const DOW = ['日', '一', '二', '三', '四', '五', '六'];
 const ntd = (n: number) => `$${n.toLocaleString('en-US')}`;
@@ -61,8 +62,9 @@ export default function RecurringSection({ userId, onChanged }: { userId: string
       ]);
       setRules(r.rules);
       setCats(c.categories);
-      setAccounts(a.accounts);
-      setCards(cc.cards);
+      // 付款方式只能選共同或自己的
+      setAccounts(a.accounts.filter((x) => x.canEdit !== false));
+      setCards(cc.cards.filter((x) => x.canEdit !== false));
     } finally {
       setLoading(false);
     }
@@ -86,6 +88,7 @@ export default function RecurringSection({ userId, onChanged }: { userId: string
     setOpen(true);
   };
   const openEdit = (r: Rule) => {
+    if (r.canEdit === false) return;
     setEditing(r);
     setFType(r.type);
     setFCat(r.categoryId);
@@ -158,14 +161,14 @@ export default function RecurringSection({ userId, onChanged }: { userId: string
         <ul className="space-y-1.5">
           {rules.map((r) => (
             <li key={r.id} className="flex items-center justify-between rounded-md border border-gray-100 px-3 py-2">
-              <button onClick={() => openEdit(r)} className="min-w-0 flex-1 text-left">
+              <button onClick={() => openEdit(r)} disabled={r.canEdit === false} className="min-w-0 flex-1 text-left disabled:cursor-default">
                 <p className="truncate text-sm">
                   {r.categoryIcon ?? ''} {r.note || r.categoryName}
                   {r.type === 'EXPENSE' && !r.isShared && <span className="ml-1 rounded bg-gray-100 px-1 text-[10px] text-gray-500">個人</span>}
                 </p>
                 <p className="text-xs text-gray-400">{freqLabel(r)}　{ntd(r.amount)}{r.payName ? `　${r.payName}` : ''}</p>
               </button>
-              <button onClick={() => toggleActive(r)} className={`ml-2 shrink-0 rounded-full px-2 py-1 text-[11px] ${r.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-400'}`}>
+              <button onClick={() => toggleActive(r)} disabled={r.canEdit === false} className={`ml-2 shrink-0 rounded-full px-2 py-1 text-[11px] ${r.isActive ? 'bg-emerald-50 text-emerald-600' : 'bg-gray-100 text-gray-400'}`}>
                 {r.isActive ? '啟用中' : '已暫停'}
               </button>
             </li>

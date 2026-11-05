@@ -9,6 +9,7 @@ import { recordTransaction } from '../../services/transaction';
 import { getBudgetAlert } from '../../services/budget';
 import { ensureDefaultAccounts, resolveAccountId, findAccountIdByName } from '../../services/account';
 import { resolveCreditCardId } from '../../services/creditcard';
+import { loadAccessScope, isOthersPersonalInstrumentName } from '../../services/access';
 import { setPendingAccount, buildAddAccountQuickReply } from './pending-account';
 import { buildQuickFixReply } from './quick-fix';
 import { logger } from '../../logger';
@@ -57,7 +58,9 @@ export async function handleTextMessage(
 
   // 階段 1 — 把文字丟 Gemini 解析成「金額 + 分類 + 備註 + 付款方式」並寫入 Transaction
   await ensureDefaultAccounts(member.familyId);
-  const [categories, accounts, cards] = await Promise.all([
+  // 權限（D10）：只能記到共同或自己的帳戶／卡；給 Gemini 的付款名單也只放這些
+  const scope = await loadAccessScope(member.familyId, member.id);
+  const [categories, accountRows, cardRows] = await Promise.all([
     prisma.category.findMany({
       where: { familyId: member.familyId },
       select: { name: true, type: true },
@@ -65,15 +68,17 @@ export async function handleTextMessage(
     }),
     prisma.account.findMany({
       where: { familyId: member.familyId, isArchived: false },
-      select: { name: true },
+      select: { id: true, name: true },
       orderBy: { sortOrder: 'asc' },
     }),
     prisma.creditCard.findMany({
       where: { familyId: member.familyId, isArchived: false },
-      select: { name: true },
+      select: { id: true, name: true },
       orderBy: { sortOrder: 'asc' },
     }),
   ]);
+  const accounts = accountRows.filter((a) => scope.canWriteAccount(a.id));
+  const cards = cardRows.filter((c) => scope.canWriteCard(c.id));
   const paymentNames = [...accounts.map((a) => a.name), ...cards.map((c) => c.name)];
 
   let parsed;
@@ -102,18 +107,20 @@ export async function handleTextMessage(
   let accountId: string | null = null;
   let creditCardId: string | null = null;
   let unknownPay: string | null = null;
+  let othersPay: string | null = null; // 說的是其他成員的個人帳戶／卡：不能記進去，也不問要不要新增
 
   if (rawPay) {
-    creditCardId = await resolveCreditCardId(member.familyId, rawPay);
+    creditCardId = await resolveCreditCardId(member.familyId, rawPay, scope);
     if (!creditCardId) {
-      accountId = await findAccountIdByName(member.familyId, rawPay);
+      accountId = await findAccountIdByName(member.familyId, rawPay, scope);
       if (!accountId) {
-        unknownPay = rawPay;
-        accountId = await resolveAccountId(member.familyId, null); // 先記到預設帳戶
+        if (await isOthersPersonalInstrumentName(scope, rawPay)) othersPay = rawPay;
+        else unknownPay = rawPay;
+        accountId = await resolveAccountId(member.familyId, null, scope); // 先記到預設帳戶
       }
     }
   } else {
-    accountId = await resolveAccountId(member.familyId, null);
+    accountId = await resolveAccountId(member.familyId, null, scope);
   }
 
   // 逐筆寫入每個細項
@@ -137,8 +144,11 @@ export async function handleTextMessage(
       : null;
   const acctName = payLabel;
   const hasExpense = parsed.some((p) => p.type === 'EXPENSE');
-  const alert = hasExpense ? await getBudgetAlert(member.familyId) : null;
+  const alert = hasExpense ? await getBudgetAlert(member.familyId, scope) : null;
   const alertLine = alert ? `\n\n${alert}` : '';
+  const othersLine = othersPay
+    ? `\n\n「${othersPay}」是其他成員的個人帳戶，只有本人能記帳，已先記到${acctName ? `「${acctName}」` : '預設帳戶'}。`
+    : '';
 
   let body: string;
   if (txs.length === 1) {
@@ -167,6 +177,7 @@ export async function handleTextMessage(
   if (unknownPay) {
     setPendingAccount(userId, {
       familyId: member.familyId,
+      memberId: member.id,
       name: unknownPay,
       txnIds: txs.map((t) => t.id),
     });
@@ -187,6 +198,6 @@ export async function handleTextMessage(
   const quickReply = txs.length === 1 ? buildQuickFixReply(txs[0].id, txs[0].isShared) : undefined;
   await lineClient.replyMessage({
     replyToken: event.replyToken,
-    messages: [{ type: 'text', text: `${body}${alertLine}`, ...(quickReply ? { quickReply } : {}) }],
+    messages: [{ type: 'text', text: `${body}${alertLine}${othersLine}`, ...(quickReply ? { quickReply } : {}) }],
   });
 }

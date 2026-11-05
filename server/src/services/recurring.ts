@@ -1,6 +1,13 @@
 import { prisma } from '../prisma';
 import { logger } from '../logger';
 import type { RecurringFreq } from '@prisma/client';
+import type { AccessScope, Instrumented } from '../lib/access';
+
+// 固定收支的付款工具權限：跟交易一樣（D10）。看不到 → 404、不是本人 → 403
+function assertInstrumentWritable(scope: AccessScope, inst: Instrumented) {
+  if (inst.creditCardId) scope.assertCardWritable(inst.creditCardId);
+  else if (inst.accountId) scope.assertAccountWritable(inst.accountId);
+}
 
 function taipeiNow(): { y: number; m: number; d: number; dow: number; ymd: string } {
   const t = new Date(Date.now() + 8 * 60 * 60 * 1000);
@@ -21,9 +28,10 @@ function clampDay(n: unknown, fallback: number, max = 31): number {
   return Math.min(v, max);
 }
 
-// 列出固定收支（含分類/帳戶/卡名稱）
-export async function getRecurringRules(familyId: string) {
-  const rules = await prisma.recurringRule.findMany({ where: { familyId }, orderBy: { createdAt: 'desc' } });
+// 列出固定收支（含分類/帳戶/卡名稱）。規則本身就是明細：只列看得到明細的付款工具
+export async function getRecurringRules(familyId: string, scope: AccessScope) {
+  const allRules = await prisma.recurringRule.findMany({ where: { familyId }, orderBy: { createdAt: 'desc' } });
+  const rules = allRules.filter((r) => scope.txLevel(r) === 'DETAIL');
   if (rules.length === 0) return [];
   const [cats, accounts, cards] = await Promise.all([
     prisma.category.findMany({ where: { familyId } }),
@@ -51,6 +59,7 @@ export async function getRecurringRules(familyId: string) {
     creditCardId: r.creditCardId,
     payName: r.creditCardId ? cardMap.get(r.creditCardId)?.name ?? null : r.accountId ? accMap.get(r.accountId)?.name ?? null : null,
     lastPostedAt: r.lastPostedAt?.toISOString() ?? null,
+    canEdit: scope.canWriteTx(r),
   }));
 }
 
@@ -66,9 +75,10 @@ export async function createRecurringRule(params: {
   dayOfWeek?: number;
   accountId?: string | null;
   creditCardId?: string | null;
-}) {
+}, scope: AccessScope) {
   const cat = await prisma.category.findFirst({ where: { id: params.categoryId, familyId: params.familyId } });
   if (!cat) throw new Error('invalid categoryId');
+  assertInstrumentWritable(scope, { accountId: params.creditCardId ? null : params.accountId, creditCardId: params.creditCardId });
   return prisma.recurringRule.create({
     data: {
       familyId: params.familyId,
@@ -99,9 +109,11 @@ export async function updateRecurringRule(params: {
   accountId?: string | null;
   creditCardId?: string | null;
   isActive?: boolean;
-}) {
+}, scope: AccessScope) {
   const rule = await prisma.recurringRule.findFirst({ where: { id: params.id, familyId: params.familyId } });
   if (!rule) throw new Error('rule not found');
+  if (scope.txLevel(rule) !== 'DETAIL') throw new Error('rule not found');
+  assertInstrumentWritable(scope, rule);
   const data: Record<string, unknown> = {};
   if (params.categoryId !== undefined) {
     const cat = await prisma.category.findFirst({ where: { id: params.categoryId, familyId: params.familyId } });
@@ -123,12 +135,18 @@ export async function updateRecurringRule(params: {
     data.accountId = params.accountId || null;
     if (params.accountId) data.creditCardId = null;
   }
+  // 改付款工具時，新的也要能寫
+  assertInstrumentWritable(scope, {
+    accountId: data.accountId !== undefined ? (data.accountId as string | null) : rule.accountId,
+    creditCardId: data.creditCardId !== undefined ? (data.creditCardId as string | null) : rule.creditCardId,
+  });
   return prisma.recurringRule.update({ where: { id: params.id }, data });
 }
 
-export async function deleteRecurringRule(familyId: string, id: string) {
+export async function deleteRecurringRule(familyId: string, id: string, scope: AccessScope) {
   const rule = await prisma.recurringRule.findFirst({ where: { id, familyId } });
-  if (!rule) throw new Error('rule not found');
+  if (!rule || scope.txLevel(rule) !== 'DETAIL') throw new Error('rule not found');
+  assertInstrumentWritable(scope, rule);
   await prisma.recurringRule.delete({ where: { id } });
 }
 

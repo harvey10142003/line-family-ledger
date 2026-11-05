@@ -3,6 +3,8 @@ import { prisma } from '../../prisma';
 import { lineClient } from '../client';
 import { findMemberByLineId } from '../../services/family';
 import { logger } from '../../logger';
+import { loadAccessScope, getWritableTransaction } from '../../services/access';
+import { AccessError } from '../../lib/access';
 
 function ntd(n: number): string {
   return `$${n.toLocaleString('en-US')}`;
@@ -22,15 +24,22 @@ export function buildQuickFixReply(txId: string, isShared: boolean) {
   };
 }
 
-async function findTx(userId: string, txId: string) {
+// 跟 LIFF 同一層權限（lib/access.ts）：看不到明細的當作找不到；別人個人帳戶上的回「只有本人能改」
+type Found = { member: NonNullable<Awaited<ReturnType<typeof findMemberByLineId>>>; tx: Awaited<ReturnType<typeof getWritableTransaction>> };
+async function findTx(userId: string, txId: string): Promise<Found | null | 'forbidden'> {
   const member = await findMemberByLineId(userId);
   if (!member) return null;
-  const tx = await prisma.transaction.findFirst({
-    where: { id: txId, familyId: member.familyId },
-    include: { category: true },
-  });
-  return tx ? { member, tx } : null;
+  const scope = await loadAccessScope(member.familyId, member.id);
+  try {
+    const tx = await getWritableTransaction(scope, txId);
+    return { member, tx };
+  } catch (err) {
+    if (err instanceof AccessError) return err.status === 403 ? 'forbidden' : null;
+    throw err;
+  }
 }
+
+const FORBIDDEN_TEXT = '這筆記在其他成員的個人帳戶，只有本人能修改。';
 
 export async function handleQuickFix(userId: string, replyToken: string, action: string, params: URLSearchParams): Promise<boolean> {
   const txId = params.get('tx');
@@ -39,6 +48,10 @@ export async function handleQuickFix(userId: string, replyToken: string, action:
   try {
     if (action === 'del_tx') {
       const found = await findTx(userId, txId);
+      if (found === 'forbidden') {
+        await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: FORBIDDEN_TEXT }] });
+        return true;
+      }
       if (!found) {
         await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: '找不到這筆紀錄（可能已刪除）。' }] });
         return true;
@@ -50,6 +63,10 @@ export async function handleQuickFix(userId: string, replyToken: string, action:
 
     if (action === 'toggle_shared') {
       const found = await findTx(userId, txId);
+      if (found === 'forbidden') {
+        await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: FORBIDDEN_TEXT }] });
+        return true;
+      }
       if (!found) {
         await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: '找不到這筆紀錄。' }] });
         return true;
@@ -62,6 +79,10 @@ export async function handleQuickFix(userId: string, replyToken: string, action:
 
     if (action === 'fix_cat') {
       const found = await findTx(userId, txId);
+      if (found === 'forbidden') {
+        await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: FORBIDDEN_TEXT }] });
+        return true;
+      }
       if (!found) {
         await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: '找不到這筆紀錄。' }] });
         return true;
@@ -92,6 +113,10 @@ export async function handleQuickFix(userId: string, replyToken: string, action:
     if (action === 'set_cat') {
       const catId = params.get('c');
       const found = await findTx(userId, txId);
+      if (found === 'forbidden') {
+        await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: FORBIDDEN_TEXT }] });
+        return true;
+      }
       if (!found || !catId) {
         await lineClient.replyMessage({ replyToken, messages: [{ type: 'text', text: '找不到這筆紀錄。' }] });
         return true;

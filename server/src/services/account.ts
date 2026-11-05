@@ -1,5 +1,6 @@
 import { prisma } from '../prisma';
-import type { AccountType } from '@prisma/client';
+import type { AccountType, Visibility } from '@prisma/client';
+import type { AccessLevel, AccessScope } from '../lib/access';
 
 // 建立家庭時 / 首次使用帳戶功能時自動套用的預設帳戶
 // 信用卡已獨立為 CreditCard，預設帳戶 = 現金 / 銀行 / 電子錢包
@@ -40,16 +41,25 @@ export type AccountWithBalance = {
   isDefault: boolean;
   isArchived: boolean;
   sortOrder: number;
+  // 財務中樞 P1-2：歸屬與可見範圍
+  ownerMemberId: string | null;
+  ownerName: string | null;
+  visibility: Visibility;
+  access: AccessLevel; // DETAIL＝看得到明細；TOTAL＝只看總額
+  canEdit: boolean; // D10：共同或本人的才能改
 };
 
 // 帳戶餘額 = 期初 + 收入 - 支出 + 轉入 - 轉出
-export async function getAccountsWithBalances(familyId: string, includeArchived = false): Promise<AccountWithBalance[]> {
+// 依 scope：別人 OWNER_ONLY 的帳戶不列；只看總額的列出餘額（餘額本來就是總額）。
+export async function getAccountsWithBalances(familyId: string, includeArchived: boolean, scope: AccessScope): Promise<AccountWithBalance[]> {
   await ensureDefaultAccounts(familyId);
 
-  const accounts = await prisma.account.findMany({
+  const all = await prisma.account.findMany({
     where: { familyId, ...(includeArchived ? {} : { isArchived: false }) },
     orderBy: { sortOrder: 'asc' },
+    include: { owner: { select: { displayName: true } } },
   });
+  const accounts = all.filter((a) => scope.accountLevel(a.id) !== 'NONE');
 
   // 撈該家庭所有有帳戶的交易 + 轉帳，於記憶體加總（家庭規模足夠）
   const [txs, transfers] = await Promise.all([
@@ -87,31 +97,36 @@ export async function getAccountsWithBalances(familyId: string, includeArchived 
       isDefault: a.isDefault,
       isArchived: a.isArchived,
       sortOrder: a.sortOrder,
+      ownerMemberId: a.ownerMemberId,
+      ownerName: a.owner?.displayName ?? null,
+      visibility: a.visibility,
+      access: scope.accountLevel(a.id),
+      canEdit: scope.canWriteAccount(a.id),
     };
   });
 }
 
-// 記帳時把帳戶名稱（Gemini 解析出的提示）對應成 accountId；對不上用預設帳戶
-export async function resolveAccountId(familyId: string, accountName?: string | null): Promise<string | null> {
+// 記帳時把帳戶名稱（Gemini 解析出的提示）對應成 accountId；對不上用預設帳戶。
+// 只考慮說話者「可以記進去」的帳戶（共同或自己的，D10）；預設帳戶若是別人的個人帳戶就往下找。
+export async function resolveAccountId(familyId: string, accountName: string | null | undefined, scope: AccessScope): Promise<string | null> {
   await ensureDefaultAccounts(familyId);
 
   if (accountName) {
-    const hit = await prisma.account.findFirst({
-      where: { familyId, name: accountName, isArchived: false },
-    });
-    if (hit) return hit.id;
+    const hit = await findAccountIdByName(familyId, accountName, scope);
+    if (hit) return hit;
   }
-  const def = await prisma.account.findFirst({
+  const candidates = await prisma.account.findMany({
     where: { familyId, isArchived: false },
     orderBy: [{ isDefault: 'desc' }, { sortOrder: 'asc' }],
+    select: { id: true },
   });
-  return def?.id ?? null;
+  return candidates.find((a) => scope.canWriteAccount(a.id))?.id ?? null;
 }
 
-// 精準比對帳戶名稱（找不到回 null，不退預設）— 給「未知付款→詢問新增」判斷用
-export async function findAccountIdByName(familyId: string, name: string): Promise<string | null> {
+// 精準比對帳戶名稱（找不到回 null，不退預設）— 給「未知付款→詢問新增」判斷用。只回可寫入的。
+export async function findAccountIdByName(familyId: string, name: string, scope: AccessScope): Promise<string | null> {
   const hit = await prisma.account.findFirst({ where: { familyId, name, isArchived: false } });
-  return hit?.id ?? null;
+  return hit && scope.canWriteAccount(hit.id) ? hit.id : null;
 }
 
 export async function createAccount(params: {
@@ -120,6 +135,9 @@ export async function createAccount(params: {
   type?: AccountType;
   icon?: string | null;
   openingBalance?: number;
+  // 歸屬：呼叫端先用 scope.resolveOwnership 正規化（只能共同或自己）；不給＝共同（舊行為）
+  ownerMemberId?: string | null;
+  visibility?: Visibility;
 }) {
   const max = await prisma.account.aggregate({ where: { familyId: params.familyId }, _max: { sortOrder: true } });
   return prisma.account.create({
@@ -130,22 +148,33 @@ export async function createAccount(params: {
       icon: params.icon ?? null,
       openingBalance: params.openingBalance ?? 0,
       sortOrder: (max._max.sortOrder ?? 0) + 1,
+      ...(params.ownerMemberId ? { ownerMemberId: params.ownerMemberId, visibility: params.visibility ?? 'FAMILY_TOTAL_ONLY' } : {}),
     },
   });
 }
 
-export async function updateAccount(params: {
-  familyId: string;
-  accountId: string;
-  name?: string;
-  type?: AccountType;
-  icon?: string | null;
-  openingBalance?: number;
-  isDefault?: boolean;
-  isArchived?: boolean;
-}) {
+export async function updateAccount(
+  params: {
+    familyId: string;
+    accountId: string;
+    name?: string;
+    type?: AccountType;
+    icon?: string | null;
+    openingBalance?: number;
+    isDefault?: boolean;
+    isArchived?: boolean;
+    ownerMemberId?: unknown; // 自己的 memberId／null（改回共同）；其他值 → 403
+    visibility?: unknown;
+  },
+  scope: AccessScope,
+) {
   const acc = await prisma.account.findFirst({ where: { id: params.accountId, familyId: params.familyId } });
   if (!acc) throw new Error('account not found');
+  scope.assertAccountWritable(acc.id); // D10：別人的個人帳戶不能改（看不到的回 404）
+  const ownership =
+    params.ownerMemberId !== undefined || params.visibility !== undefined
+      ? scope.resolveOwnership(acc, { ownerMemberId: params.ownerMemberId, visibility: params.visibility })
+      : null;
 
   // 設為預設 → 其他取消預設
   if (params.isDefault === true) {
@@ -161,6 +190,7 @@ export async function updateAccount(params: {
       ...(params.openingBalance !== undefined ? { openingBalance: params.openingBalance } : {}),
       ...(params.isDefault !== undefined ? { isDefault: params.isDefault } : {}),
       ...(params.isArchived !== undefined ? { isArchived: params.isArchived } : {}),
+      ...(ownership ?? {}),
     },
   });
 }
@@ -173,7 +203,7 @@ export async function createTransfer(params: {
   amount: number;
   note?: string | null;
   transferredAt?: Date;
-}) {
+}, scope: AccessScope) {
   if (params.fromAccountId === params.toAccountId) throw new Error('from/to accounts must differ');
   if (!(params.amount > 0)) throw new Error('amount must be positive');
 
@@ -182,6 +212,9 @@ export async function createTransfer(params: {
     where: { familyId: params.familyId, id: { in: [params.fromAccountId, params.toAccountId] } },
   });
   if (accs.length !== 2) throw new Error('invalid accounts');
+  // D10／D18：不能從別人的個人帳戶轉出；目的帳戶要看得到（不能轉進看不到的帳戶）
+  scope.assertAccountWritable(params.fromAccountId);
+  scope.assertAccountTargetable(params.toAccountId);
 
   return prisma.transfer.create({
     data: {

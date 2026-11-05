@@ -159,8 +159,10 @@ test('resolveLoginChannelId：env 優先，否則用 LIFF id 前綴，都沒有�
 test('靜態守門：liff 路由不再讀 x-line-user-id，且在所有路由前掛上 middleware', () => {
   const src = readFileSync(join(__dirname, '../src/routes/liff.ts'), 'utf8');
   assert.ok(!src.includes('x-line-user-id'), 'routes/liff.ts 不可再讀 x-line-user-id');
-  const useIdx = src.indexOf('liffRouter.use(');
-  const firstRoute = src.search(/liffRouter\.(get|post|put|patch|delete)\(/);
-  assert.ok(useIdx > 0 && firstRoute > useIdx, 'liffRouter.use(createLiffAuth) 必須在第一個路由之前');
-  assert.ok(src.includes('createLiffAuth('));
+  // 路由改成 buildLiffRouter(auth) 建立（P1-2）：auth 必須是第一個 r.use，且正式匯出的 liffRouter 帶 createLiffAuth。
+  // 執行期的層順序另由 liff-router-guard.test.ts 直接檢查 router stack。
+  const useIdx = src.indexOf('r.use(auth)');
+  const firstRoute = src.search(/\br\.(get|post|put|patch|delete)\(/);
+  assert.ok(useIdx > 0 && firstRoute > useIdx, 'r.use(auth) 必須在第一個路由之前');
+  assert.match(src, /export const liffRouter = buildLiffRouter\(\s*createLiffAuth\(/);
 });

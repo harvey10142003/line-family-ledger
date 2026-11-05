@@ -1,5 +1,6 @@
 import { prisma } from '../prisma';
 import { getMonthlySummary } from './transaction';
+import type { AccessScope } from '../lib/access';
 
 // 取得家庭目前設定的預算（整體 + 各分類）
 export async function getBudgets(familyId: string) {
@@ -36,11 +37,12 @@ function currentTaipeiMonth(): string {
 }
 
 // 記帳後檢查整體月預算，回傳要附加的提醒字串（未設定或未達 80% 回 null）
-export async function getBudgetAlert(familyId: string): Promise<string | null> {
+// 依說話者的 scope 算（看不到的帳戶不算進他的已花）
+export async function getBudgetAlert(familyId: string, scope: AccessScope): Promise<string | null> {
   const { overall } = await getBudgets(familyId);
   if (overall == null || overall <= 0) return null;
 
-  const summary = await getMonthlySummary(familyId, currentTaipeiMonth());
+  const summary = await getMonthlySummary(familyId, currentTaipeiMonth(), scope);
   const pct = Math.round((summary.totalExpense / overall) * 100);
   if (pct >= 100) {
     return `⚠️ 本月已超出預算！已花 $${summary.totalExpense.toLocaleString('en-US')} / 預算 $${overall.toLocaleString('en-US')}（${pct}%）`;
@@ -58,10 +60,10 @@ export type BudgetStatus = {
 };
 
 // 預算使用狀況：把設定的預算對上當月支出
-export async function getBudgetStatus(familyId: string, month: string): Promise<BudgetStatus> {
+export async function getBudgetStatus(familyId: string, month: string, scope: AccessScope): Promise<BudgetStatus> {
   const [{ overall, byCategory }, summary, cats] = await Promise.all([
     getBudgets(familyId),
-    getMonthlySummary(familyId, month),
+    getMonthlySummary(familyId, month, scope),
     prisma.category.findMany({ where: { familyId } }),
   ]);
 

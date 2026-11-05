@@ -1,5 +1,12 @@
 import { prisma } from '../prisma';
 import type { ParsedTransaction, ParsedBillItem } from '../ai/gemini';
+import { AccessScope } from '../lib/access';
+
+// 別人「只看總額」的個人帳戶交易：算進總額，但不露出分類（分類就是明細）。
+export const TOTAL_ONLY_BUCKET_NAME = '其他成員個人帳戶';
+
+// 不公開帳戶在轉帳列表上的顯示名稱
+export const HIDDEN_ACCOUNT_NAME = '不公開帳戶';
 
 // 台灣時區月份邊界：把 "YYYY-MM" 轉成 [start, end) 的 UTC Date
 // Zeabur 容器是 UTC，使用者在台灣(+08:00)，月報表要以台北日界切分。
@@ -100,7 +107,7 @@ export async function recordTransactionsBatch(params: {
 }
 
 // 近 N 個月收支趨勢（舊→新），台北月界
-export async function getTrend(familyId: string, months = 6): Promise<{ month: string; expense: number; income: number }[]> {
+export async function getTrend(familyId: string, months: number, scope: AccessScope): Promise<{ month: string; expense: number; income: number }[]> {
   const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
   const list: string[] = [];
   for (let i = months - 1; i >= 0; i--) {
@@ -111,12 +118,13 @@ export async function getTrend(familyId: string, months = 6): Promise<{ month: s
 
   const txs = await prisma.transaction.findMany({
     where: { familyId, paidAt: { gte: start } },
-    select: { amount: true, paidAt: true, category: { select: { type: true } } },
+    select: { amount: true, paidAt: true, accountId: true, creditCardId: true, category: { select: { type: true } } },
   });
 
   const map = new Map<string, { expense: number; income: number }>();
   list.forEach((m) => map.set(m, { expense: 0, income: 0 }));
   for (const t of txs) {
+    if (!AccessScope.inTotals(scope.txLevel(t))) continue;
     const tp = new Date(t.paidAt.getTime() + 8 * 60 * 60 * 1000);
     const key = `${tp.getUTCFullYear()}-${String(tp.getUTCMonth() + 1).padStart(2, '0')}`;
     const bucket = map.get(key);
@@ -136,8 +144,8 @@ export type MonthlySummary = {
   byMember: { memberId: string; name: string; amount: number }[]; // 僅統計支出占比
 };
 
-// 月度摘要：分類圓餅圖 + 成員支出占比
-export async function getMonthlySummary(familyId: string, month: string): Promise<MonthlySummary> {
+// 月度摘要：分類圓餅圖 + 成員支出占比（依 scope：看不到的不算；只看總額的算進總額但併成一塊、不露分類）
+export async function getMonthlySummary(familyId: string, month: string, scope: AccessScope): Promise<MonthlySummary> {
   const { start, end } = monthRange(month);
 
   const txs = await prisma.transaction.findMany({
@@ -151,13 +159,18 @@ export async function getMonthlySummary(familyId: string, month: string): Promis
   const memMap = new Map<string, { memberId: string; name: string; amount: number }>();
 
   for (const t of txs) {
+    const level = scope.txLevel(t);
+    if (!AccessScope.inTotals(level)) continue;
     const amt = Number(t.amount);
     const type = t.category.type;
     if (type === 'INCOME') totalIncome += amt;
     else totalExpense += amt;
 
-    const catKey = t.categoryId;
-    const cat = catMap.get(catKey) ?? { name: t.category.name, icon: t.category.icon, type, amount: 0 };
+    const totalOnly = level === 'TOTAL';
+    const catKey = totalOnly ? `__total_only_${type}` : t.categoryId;
+    const cat =
+      catMap.get(catKey) ??
+      (totalOnly ? { name: TOTAL_ONLY_BUCKET_NAME, icon: null, type, amount: 0 } : { name: t.category.name, icon: t.category.icon, type, amount: 0 });
     cat.amount += amt;
     catMap.set(catKey, cat);
 
@@ -189,7 +202,7 @@ export type Settlement = {
 
 // 分帳結算：假設當月支出由全家均分，記錄者視為付款人。
 // balance = 已付 - 應分攤；正數代表多付（該收回），負數代表少付（該補）。
-export async function getSettlement(familyId: string, month: string): Promise<Settlement> {
+export async function getSettlement(familyId: string, month: string, scope: AccessScope): Promise<Settlement> {
   const { start, end } = monthRange(month);
   const [members, txs] = await Promise.all([
     prisma.familyMember.findMany({ where: { familyId } }),
@@ -204,6 +217,7 @@ export async function getSettlement(familyId: string, month: string): Promise<Se
   for (const t of txs) {
     if (t.category.type !== 'EXPENSE') continue;
     if (!t.isShared) continue; // 個人支出不納入分帳
+    if (!AccessScope.inTotals(scope.txLevel(t))) continue; // 看不到的帳戶不算（只看總額的照算，分帳只露每人總數）
     const amt = Number(t.amount);
     totalExpense += amt;
     paidBy.set(t.memberId, (paidBy.get(t.memberId) ?? 0) + amt);
@@ -245,32 +259,34 @@ export async function getSettlement(familyId: string, month: string): Promise<Se
 }
 
 // 月度轉帳列表
-export async function getMonthlyTransfers(familyId: string, month: string) {
+export async function getMonthlyTransfers(familyId: string, month: string, scope: AccessScope) {
   const { start, end } = monthRange(month);
   const rows = await prisma.transfer.findMany({
     where: { familyId, transferredAt: { gte: start, lt: end } },
     include: { fromAccount: true, toAccount: true, member: true },
     orderBy: { transferredAt: 'desc' },
   });
-  return rows.map((t) => ({
+  const views = rows.map((t) => ({ t, v: scope.transferView(t) })).filter((x) => x.v.visible);
+  return views.map(({ t, v }) => ({
     id: t.id,
     amount: Number(t.amount),
-    fromName: t.fromAccount.name,
-    toName: t.toAccount.name,
+    fromName: v.maskFrom ? HIDDEN_ACCOUNT_NAME : t.fromAccount.name,
+    toName: v.maskTo ? HIDDEN_ACCOUNT_NAME : t.toAccount.name,
     note: t.note,
     memberName: t.member.displayName,
     transferredAt: t.transferredAt.toISOString(),
   }));
 }
 
-// 月度明細列表（新到舊）
-export async function getMonthlyTransactions(familyId: string, month: string) {
+// 月度明細列表（新到舊）：只列看得到明細的；canEdit＝D10（共同或本人的個人帳戶）
+export async function getMonthlyTransactions(familyId: string, month: string, scope: AccessScope) {
   const { start, end } = monthRange(month);
-  const txs = await prisma.transaction.findMany({
+  const all = await prisma.transaction.findMany({
     where: { familyId, paidAt: { gte: start, lt: end } },
     include: { category: true, member: true, account: true, creditCard: true },
     orderBy: { paidAt: 'desc' },
   });
+  const txs = all.filter((t) => scope.txLevel(t) === 'DETAIL');
 
   return txs.map((t) => ({
     id: t.id,
@@ -288,5 +304,6 @@ export async function getMonthlyTransactions(familyId: string, month: string) {
     accountIcon: t.account?.icon ?? t.creditCard?.icon ?? (t.creditCardId ? '💳' : null),
     paidAt: t.paidAt.toISOString(),
     source: t.source,
+    canEdit: scope.canWriteTx(t),
   }));
 }

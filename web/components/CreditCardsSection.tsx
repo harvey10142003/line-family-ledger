@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { apiGet, apiPost, apiPut } from '@/lib/api';
+import { OwnershipFields, OwnerBadges, ownershipBody, type Owned, type Visibility } from './OwnershipFields';
 
 type Card = {
   id: string;
@@ -15,14 +16,14 @@ type Card = {
   nextDueDate: string;
   isArchived: boolean;
   sortOrder: number;
-};
+} & Owned;
 
 function ntd(n: number): string {
   const s = `$${Math.abs(n).toLocaleString('en-US')}`;
   return n < 0 ? `-${s}` : s;
 }
 
-export default function CreditCardsSection({ userId }: { userId: string }) {
+export default function CreditCardsSection({ userId, memberId }: { userId: string; memberId: string }) {
   const [cards, setCards] = useState<Card[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
@@ -32,6 +33,8 @@ export default function CreditCardsSection({ userId }: { userId: string }) {
   const [limit, setLimit] = useState('');
   const [statementDay, setStatementDay] = useState('');
   const [dueDay, setDueDay] = useState('');
+  const [mine, setMine] = useState(false);
+  const [vis, setVis] = useState<Visibility>('FAMILY_TOTAL_ONLY');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -53,11 +56,16 @@ export default function CreditCardsSection({ userId }: { userId: string }) {
     setLimit('');
     setStatementDay('');
     setDueDay('');
+    setMine(false);
+    setVis('FAMILY_TOTAL_ONLY');
     setOpen(true);
   };
 
   const openEdit = (c: Card) => {
+    if (c.canEdit === false) return; // D10：家人的個人卡只能看，不能改
     setEditing(c);
+    setMine(c.ownerMemberId === memberId);
+    setVis(c.ownerMemberId ? c.visibility ?? 'FAMILY_TOTAL_ONLY' : 'FAMILY_TOTAL_ONLY');
     setName(c.name);
     setLimit(String(c.creditLimit));
     setStatementDay(String(c.statementDay));
@@ -72,6 +80,7 @@ export default function CreditCardsSection({ userId }: { userId: string }) {
       creditLimit: Number(limit) || 0,
       statementDay: Number(statementDay) || 1,
       dueDay: Number(dueDay) || 15,
+      ...ownershipBody(mine, vis, memberId),
     };
     setBusy(true);
     try {
@@ -113,9 +122,9 @@ export default function CreditCardsSection({ userId }: { userId: string }) {
             const usedPct = c.creditLimit > 0 ? Math.min(Math.round((c.cycleUsed / c.creditLimit) * 100), 100) : 0;
             return (
               <li key={c.id}>
-                <button onClick={() => openEdit(c)} className="w-full rounded-md border border-gray-100 p-3 text-left hover:bg-gray-50">
+                <button onClick={() => openEdit(c)} disabled={c.canEdit === false} className="w-full rounded-md border border-gray-100 p-3 text-left hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">{c.icon ?? '💳'} {c.name}</span>
+                    <span className="flex items-center gap-1.5 text-sm font-medium">{c.icon ?? '💳'} {c.name}<OwnerBadges item={c} memberId={memberId} /></span>
                     <span className="text-xs text-gray-500">額度 {ntd(c.creditLimit)}</span>
                   </div>
                   <div className="mt-1.5 h-2 rounded-full bg-gray-100">
@@ -150,6 +159,7 @@ export default function CreditCardsSection({ userId }: { userId: string }) {
               <input value={dueDay} onChange={(e) => setDueDay(e.target.value)} type="number" inputMode="numeric" min={1} max={31} placeholder="如 22" className="mt-1 w-full rounded-md border border-gray-200 px-3 py-2 text-sm" />
             </label>
           </div>
+          <OwnershipFields mine={mine} visibility={vis} onChange={(n) => { setMine(n.mine); setVis(n.visibility); }} />
           <div className="flex items-center justify-between gap-2 pt-1">
             <div className="flex gap-2">
               <button onClick={save} disabled={busy} className="rounded-md bg-indigo-500 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{busy ? '儲存中' : '儲存'}</button>

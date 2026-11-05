@@ -5,6 +5,7 @@ import { prisma } from '../../prisma';
 import { parseBillFile, type ParsedBillItem } from '../../ai/gemini';
 import { recordTransactionsBatch } from '../../services/transaction';
 import { resolveAccountId } from '../../services/account';
+import { loadAccessScope } from '../../services/access';
 import { logger } from '../../logger';
 
 // 暫存待確認的帳單匯入（MVP in-memory，正式部署換 Redis）
@@ -131,7 +132,8 @@ export async function confirmPendingBill(userId: string, replyToken: string): Pr
   }
   pendingBills.delete(userId);
 
-  const accountId = await resolveAccountId(bill.familyId, null);
+  const scope = await loadAccessScope(bill.familyId, bill.memberId);
+  const accountId = await resolveAccountId(bill.familyId, null, scope); // 只記到共同或自己的帳戶（D10）
   const { count, total } = await recordTransactionsBatch({
     familyId: bill.familyId,
     memberId: bill.memberId,
