@@ -5,6 +5,8 @@
 // 不算金額：日期（10/3、2026-10-03、10月3日）、時間（12:30）、遮罩代號（[卡號末4:1234]）、
 // 「1234 那張」這種末四碼（後面接「那張／末四碼」）、星期幾、「N 天前」。
 
+import { DEFAULT_FX_RATES, convertToTwd, envFxRates } from './fx-rates';
+
 const CN_NUM: Record<string, number> = { 零: 0, 〇: 0, 一: 1, 二: 2, 兩: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
 const CN_UNIT: Record<string, number> = { 十: 10, 百: 100, 千: 1000 };
 
@@ -143,34 +145,11 @@ export function currencyInText(segment: string): string | null {
 }
 
 /**
- * 參考匯率（1 單位外幣＝多少台幣）。規格 3.9.3：正式來源（臺銀牌告即期賣出）實作時再定，
- * 這裡先放保守的固定值，可用環境變數 FX_REFERENCE_RATES='{"USD":32.4}' 覆寫。估出來的台幣一律標 amountEstimated，
- * 卡帳單進來後（P2）改成實際扣款金額。
+ * 參考匯率的「同步退路」（1 單位外幣＝多少台幣）：env FX_REFERENCE_RATES 蓋過固定值。
+ * 正式來源是臺銀牌告（services/fx.ts，記帳時依消費日查 FxRateDaily 再覆寫）；這裡只給計畫階段先估、與查不到時用。
  */
-const DEFAULT_RATES: Record<string, number> = {
-  USD: 32.5,
-  JPY: 0.21,
-  EUR: 35.5,
-  CNY: 4.5,
-  HKD: 4.15,
-  KRW: 0.024,
-  GBP: 41.5,
-  AUD: 21.5,
-  SGD: 24.5,
-  THB: 0.95,
-};
-
 export function referenceRates(env: NodeJS.ProcessEnv = process.env): Record<string, number> {
-  const rates = { ...DEFAULT_RATES };
-  if (env.FX_REFERENCE_RATES) {
-    try {
-      const o = JSON.parse(env.FX_REFERENCE_RATES) as Record<string, unknown>;
-      for (const [k, v] of Object.entries(o)) if (typeof v === 'number' && v > 0) rates[k.toUpperCase()] = v;
-    } catch {
-      /* 格式錯就用預設 */
-    }
-  }
-  return rates;
+  return { ...DEFAULT_FX_RATES, ...envFxRates(env) };
 }
 
 /** 原幣 → 預估台幣（四捨五入到元）。不認得的幣別回 null（呼叫端要問）。 */
@@ -178,5 +157,5 @@ export function estimateTwd(amount: number, currency: string, rates: Record<stri
   if (currency === 'TWD') return Math.round(amount * 100) / 100;
   const r = rates[currency];
   if (!r) return null;
-  return Math.round(amount * r);
+  return convertToTwd(amount, r);
 }

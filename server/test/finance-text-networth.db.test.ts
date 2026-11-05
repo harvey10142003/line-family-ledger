@@ -232,10 +232,15 @@ test('「公司 Zoom 15.99 美金」→ 代墊公司費用、USD 原幣、預估
   assert.equal(Number(tx.originalAmount), 15.99);
   assert.equal(Number(tx.amount), 520);
   assert.equal(tx.amountEstimated, true);
+  // 臺銀牌告查不到（測試庫沒有 2026 的 FxRateDaily）→ 退回 env FX_REFERENCE_RATES，交易記下來源
+  assert.equal(tx.fxRateSource, 'ENV');
+  assert.equal(Number(tx.fxRate), 32.5);
+  assert.equal(tx.fxRateDate, null);
   const sum1 = await call('shark', 'GET', '/summary?month=2026-11');
   assert.equal(sum1.json.totalExpense, sum0.json.totalExpense, '公司費用不進家庭支出');
   assert.ok(replyText().includes('公司（代墊報帳）'));
   assert.ok(replyText().includes('USD 15.99'));
+  assert.ok(replyText().includes('依參考匯率 32.5 預估'), replyText());
   const list = await call('shark', 'GET', '/transactions?month=2026-11');
   const row = list.json.items.find((x: any) => x.id === tx.id);
   assert.equal(row.bookTo, 'BUSINESS');

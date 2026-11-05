@@ -48,6 +48,13 @@ SELECT count(*) FROM "Transfer" WHERE "confirmStatus" <> 'CONFIRMED';           
 不是 0（上線後已經有人用新種類轉帳）→ 不要硬退：先修往前；真的要退，只能用 `ledger-deploy.sh` 換版前留的 pg_dump 還原（會丟掉換版後寫入的資料），
 或只退 web、server 留在第 3 批。
 
+### 臺銀牌告匯率（11-05，接在第 3 批 b66fcf2 之後）多出來的檢查
+
+schema 只加不改（`Transaction.fxRate／fxRateDate／fxRateSource` 3 個可空欄位、`FxRateDaily` 新表，預期 SQL 見
+`finance-hub-fx-bot-expected-db-push.sql`）。舊程式不讀這些欄位與表，**回退到 b66fcf2 不會壞、數字也不變**：
+已記的外幣交易 `amount` 是當時用臺銀匯率算好的台幣，回退後照舊顯示；只是之後新記的外幣改回 env／固定值估算。
+回退仍要 SKIP_DB_PUSH（舊 schema 的 db push 會想刪新表與 3 欄而失敗）。
+
 ## 回退之後
 
 - 容器是用 override 起來的：之後有人跑 `deploy-sub.sh ledger-server …`／`install.sh` 重建時沒有 override，

@@ -149,6 +149,7 @@ export interface TxLine {
   originalCurrency: string | null;
   originalAmount: number | null;
   estimated: boolean;
+  fxLabel?: string | null; // 「臺銀 11/04 即期賣出 32.875」；env／固定值時是「參考匯率 32.5」
 }
 
 /** 收支回覆：每一筆把日期、帳戶、歸屬、公司或家庭、原幣與預估台幣都寫出來（3.10.5）。 */
@@ -156,7 +157,7 @@ export function txSummaryText(lines: TxLine[], recorder: string): string {
   const one = (t: TxLine) => {
     const sign = t.type === 'INCOME' ? '+' : '';
     const money = t.originalCurrency
-      ? `${t.originalCurrency} ${t.originalAmount}（約 ${ntd(t.amount)}${t.estimated ? '，參考匯率預估' : ''}）`
+      ? `${t.originalCurrency} ${t.originalAmount}（約 ${ntd(t.amount)}${t.estimated ? `，${t.fxLabel ? `依${t.fxLabel} ` : '參考匯率'}預估` : ''}）`
       : `${sign}${ntd(t.amount)}`;
     const parts = [
       `${t.label}　${money}`,

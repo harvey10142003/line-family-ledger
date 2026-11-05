@@ -35,6 +35,7 @@ export async function recordTransaction(params: {
   originalCurrency?: string | null; // 外幣：原幣別＋原幣金額，amount 是預估台幣
   originalAmount?: number | null;
   amountEstimated?: boolean;
+  fx?: { rate: number; basis: string; rateDate: string | null } | null; // 外幣估台幣用的匯率與來源（臺銀牌告日期）
   recordedByMemberId?: string | null; // 「幫 Apple 記」：memberId＝Apple，這裡記實際打字的人
 }) {
   const { familyId, memberId, parsed } = params;
@@ -68,6 +69,9 @@ export async function recordTransaction(params: {
       ...(params.bookTo === 'BUSINESS' ? { bookTo: 'BUSINESS' as const, reimburseStatus: 'PENDING' as const } : {}),
       ...(params.originalCurrency ? { originalCurrency: params.originalCurrency, originalAmount: params.originalAmount ?? null } : {}),
       ...(params.amountEstimated ? { amountEstimated: true } : {}),
+      ...(params.originalCurrency && params.fx
+        ? { fxRate: params.fx.rate, fxRateSource: params.fx.basis, fxRateDate: params.fx.rateDate ? new Date(`${params.fx.rateDate}T00:00:00Z`) : null }
+        : {}),
       ...(params.recordedByMemberId && params.recordedByMemberId !== memberId ? { recordedByMemberId: params.recordedByMemberId } : {}),
     },
     include: { category: true, member: true, account: true, creditCard: true },
@@ -305,6 +309,9 @@ export async function getMonthlyTransactions(familyId: string, month: string, sc
     originalCurrency: t.originalCurrency,
     originalAmount: t.originalAmount == null ? null : Number(t.originalAmount),
     amountEstimated: t.amountEstimated,
+    fxRate: t.fxRate == null ? null : Number(t.fxRate),
+    fxRateDate: t.fxRateDate ? t.fxRateDate.toISOString().slice(0, 10) : null,
+    fxRateSource: t.fxRateSource,
     recordedByName: t.recordedByMemberId ? names.get(t.recordedByMemberId) ?? null : null,
   }));
 }

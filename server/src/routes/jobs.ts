@@ -4,6 +4,7 @@ import { postDueRecurring } from '../services/recurring';
 import { runMonthlySnapshots } from '../services/net-worth';
 import { notifyExpiredTransfers } from '../jobs/transfer-confirm';
 import { logger } from '../logger';
+import { syncFxRates } from '../services/fx';
 
 export const jobsRouter = Router();
 
@@ -36,6 +37,9 @@ jobsRouter.post('/:task', async (req, res) => {
     }
     if (task === 'transfer-expire') {
       return res.json({ task, ...(await notifyExpiredTransfers()) });
+    }
+    if (task === 'fx-sync') {
+      return res.json({ task, ...(await syncFxRates()) });
     }
     if (task === 'nudge') {
       return res.json({ task, ...(await sendRecordNudges()) });

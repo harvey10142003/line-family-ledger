@@ -110,6 +110,10 @@ model Transaction {
   amountEstimated    Boolean           @default(false) // true＝amount 是用參考匯率估的台幣，卡帳單進來後改實際值
   // ---- 財務中樞 P1-6（只加不改）：「幫 Apple 記」時 memberId＝歸屬人（Apple），這裡記實際打字的人；null＝本人記的（含舊資料）
   recordedByMemberId String?
+  // ---- 外幣參考匯率（11-05，只加不改）：amountEstimated 時用的是哪個匯率；null＝台幣或舊資料
+  fxRate             Decimal?          @db.Decimal(14, 6) // 1 單位外幣＝多少台幣
+  fxRateDate         DateTime?         @db.Date // 牌告日期（消費日當天或之前最近一個營業日）；env／固定值時為 null
+  fxRateSource       String? // BOT_SPOT_SELL／BOT_CASH_SELL（臺銀牌告）、ENV（FX_REFERENCE_RATES）、DEFAULT（程式固定值）
 
   family     Family       @relation(fields: [familyId], references: [id], onDelete: Cascade)
   member     FamilyMember @relation(fields: [memberId], references: [id])
@@ -545,4 +549,21 @@ model InviteLink {
   usedCount Int       @default(0)
 
   family Family @relation(fields: [familyId], references: [id], onDelete: Cascade)
+}
+
+// 臺灣銀行牌告匯率（每營業日一份收盤價，來源 https://rate.bot.com.tw/xrt/flcsv/0/YYYY-MM-DD）。
+// 數字是「1 單位外幣＝多少台幣」；沒有報價（例如 ZAR 沒有現金、IDR 沒有即期）存 null。
+// 只存有掛牌的營業日；假日記帳時用「消費日當天或之前最近一筆」。
+model FxRateDaily {
+  id        String   @id @default(cuid())
+  rateDate  DateTime @db.Date
+  currency  String // ISO 4217
+  spotBuy   Decimal? @db.Decimal(14, 6) // 即期買入
+  spotSell  Decimal? @db.Decimal(14, 6) // 即期賣出（信用卡外幣消費估算用這個）
+  cashBuy   Decimal? @db.Decimal(14, 6) // 現金買入
+  cashSell  Decimal? @db.Decimal(14, 6) // 現金賣出（沒有即期時才用）
+  source    String   @default("BOT") // 目前只有臺銀
+  fetchedAt DateTime @default(now())
+
+  @@unique([currency, rateDate])
 }

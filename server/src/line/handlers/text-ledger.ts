@@ -13,6 +13,8 @@ import { prisma } from '../../prisma';
 import { logger } from '../../logger';
 import { parseLedgerText } from '../../ai/gemini';
 import { maskSensitive } from '../../lib/mask';
+import { applyFxToPlan } from '../../services/fx';
+import { fxQuoteLabel } from '../../lib/fx-rates';
 import { buildLedgerPlan, type LedgerParseRaw, type LedgerPlan, type PlanIssue } from '../../lib/ledger-plan';
 import { optionLabel, pickKey, resolvePlan, type Question, type ResolvedTransfer, type ResolvedTx } from '../../lib/ledger-resolve';
 import { extractAmounts } from '../../lib/amount-text';
@@ -133,6 +135,8 @@ export async function handleLedgerText(member: Member, replyToken: string, sente
     return;
   }
   const plan = buildLedgerPlan(raw, masked, { now: clock(), speakerId: member.id, members, categoryNames: categories.map((c) => c.name) });
+  // 外幣：依消費日換成臺銀牌告（查不到退回 env／固定值；DB 出錯也不擋記帳）
+  await applyFxToPlan(plan);
   if (plan.issues.length) {
     await reply(replyToken, [text(issueText(plan.issues))]);
     return;
@@ -201,6 +205,7 @@ async function continueFlow(
       originalCurrency: t.step.item.originalCurrency,
       originalAmount: t.step.item.originalAmount,
       estimated: t.step.item.amountEstimated,
+      fxLabel: t.step.item.fx ? fxQuoteLabel(t.step.item.fx) : null,
     }));
     let body = txSummaryText(lines, member.displayName);
     if (txs.some((t) => t.category.type === 'EXPENSE' && t.step.item.bookTo === 'FAMILY')) {

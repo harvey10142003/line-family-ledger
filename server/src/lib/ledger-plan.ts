@@ -9,6 +9,7 @@
 // - 外幣：存原幣＋原幣金額，台幣用參考匯率估（amountEstimated）。
 // - 歸屬人：只有「幫 Apple 記」「替 Apple」「Apple 的…」這種寫法才算；「跟 Apple 吃飯」不算（那是共同支出）。
 import type { TransferKind } from '@prisma/client';
+import type { FxBasis } from './fx-rates';
 import { amountInSentence, currencyCode, currencyInText, estimateTwd, extractAmounts, referenceRates } from './amount-text';
 import { findDateText, resolveDateText, type ResolvedDate } from './date-text';
 import { baseNormalize, type MemberRef } from './account-match';
@@ -51,6 +52,7 @@ export interface PlannedTx {
   originalCurrency: string | null;
   originalAmount: number | null;
   amountEstimated: boolean;
+  fx?: { rate: number; basis: FxBasis; rateDate: string | null }; // 外幣：用了哪個匯率（services/fx.ts applyFxToPlan 依消費日填）
   categoryName: string;
   note: string;
   date: ResolvedDate;

@@ -5,6 +5,7 @@ import { webhookRouter } from './routes/webhook';
 import { liffRouter } from './routes/liff';
 import { jobsRouter } from './routes/jobs';
 import { startSchedulers } from './jobs/scheduler';
+import { fxHealth } from './services/fx';
 
 const app = express();
 
@@ -14,7 +15,8 @@ app.use('/webhook', express.raw({ type: '*/*' }), webhookRouter);
 app.use(express.json());
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, ts: Date.now() });
+  // fx：臺銀牌告抓取狀態（失敗不影響 ok，只給人看）
+  res.json({ ok: true, ts: Date.now(), fx: fxHealth() });
 });
 
 app.use('/api/liff', liffRouter);

@@ -165,6 +165,7 @@ export async function executeTx(familyId: string, speakerId: string, step: Resol
     originalCurrency: it.originalCurrency,
     originalAmount: it.originalAmount,
     amountEstimated: it.amountEstimated,
+    fx: it.fx ?? null,
   });
   return Object.assign(tx, { step });
 }

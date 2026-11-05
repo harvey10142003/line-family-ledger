@@ -4,6 +4,7 @@ import { sendMonthlySummaries, sendWeeklyBudgetDigests, sendCreditCardDueReminde
 import { postDueRecurring } from '../services/recurring';
 import { runMonthlySnapshots } from '../services/net-worth';
 import { notifyExpiredTransfers } from './transfer-confirm';
+import { syncFxRates } from '../services/fx';
 
 const TZ = 'Asia/Taipei';
 
@@ -78,5 +79,18 @@ export function startSchedulers(): void {
     { timezone: TZ },
   );
 
-  logger.info('reminder schedulers started (Asia/Taipei): recurring 08:00, monthly 1st 09:00, weekly Mon 09:00, card due 10:00, nudge 21:00, net worth 1st 08:30, transfer confirm expiry hourly');
+  // 平日 16:30（台北）抓臺銀牌告收盤價（歷史收盤價掛牌時間約 16:00）；開機時補抓最近 7 天缺的營業日。
+  // 抓不到只寫 log（/health 的 fx 欄位看得到），記帳退回 env／固定值，不推 LINE。
+  cron.schedule(
+    '30 16 * * 1-5',
+    () => {
+      syncFxRates().catch((err) => logger.error({ err }, 'fx sync job failed'));
+    },
+    { timezone: TZ },
+  );
+  setTimeout(() => {
+    syncFxRates().catch((err) => logger.error({ err }, 'fx boot sync failed'));
+  }, 15_000).unref();
+
+  logger.info('reminder schedulers started (Asia/Taipei): recurring 08:00, monthly 1st 09:00, weekly Mon 09:00, card due 10:00, nudge 21:00, net worth 1st 08:30, transfer confirm expiry hourly, fx weekdays 16:30 + boot');
 }
