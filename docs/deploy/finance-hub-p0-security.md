@@ -12,9 +12,16 @@
 
 - 金鑰放部署平台的秘密管理（GCP app-tw1：主機 env 檔，root 600；不要進 repo、不要進資料庫、不要貼到聊天或 log）。
 - **另外離線備份一份**（例如密碼管理器）。遺失＝所有已登記的帳單戶名永遠解不開（只能請家人重新登記）。
+  - **記下指紋並核對**：上線後打 `/health`，把 `fieldKeyFingerprint`（金鑰 sha256 的前 8 碼，推不回金鑰）抄進備份那一筆的備註。
+    再用備份的金鑰在本機跑 `node server/dist/scripts/field-key-fingerprint.js`，貼上金鑰按 Enter（從標準輸入讀，不進 shell 歷史），
+    印出的 8 碼要跟 `/health` 一樣——不一樣＝備份的不是線上那把，當場重備份。每次換金鑰（輪替、搬主機）都要再核對一次。
 - **搬主機必須帶同一把金鑰**（和 CRM 的 `PII_ENCRYPTION_KEY` 同一個道理）。
 - 不設也能開機：記帳、報表全部照常；只有「登記帳單戶名」回 503（fail-closed，不會改存明文）。
   開機 log 會有一行 `field encryption key unavailable`；`/health` 的 `fieldKey` 是 `false`。
+- **開機自我檢查**：資料庫裡已經有密文時，開機會用目前的金鑰試解（每個金鑰版本一筆）。解不開＝部署的金鑰不是當初寫入的那把
+  （貼錯、搬主機沒帶到、輪替時漏設 `LEDGER_FIELD_KEYS_OLD`）→ log 一行 error `field key self-check failed`，`/health` 回
+  `fieldKeyMismatch: true`。不擋開機，但這時登記、查看帳單戶名都會失敗，要立刻換回正確的金鑰。
+  `fieldKeyMismatch` 是 `null`＝還沒檢查完或金鑰不可用（看 `fieldKey`）；`false`＝試解成功或資料庫還沒有密文。
 - 不用新增 Gemini 相關 env；遮罩在程式裡。
 
 ## 2. 上線注意事項
@@ -32,7 +39,11 @@
    （照片沒辦法先遮，PDF 要等 P2-5 先抽文字）。這點仍靠 Gemini 付費層條款（Shark 待辦 S1）。
    log 每次送出多兩行 `gemini request (masked)`／`gemini response`，只有長度、命中數、二進位大小，沒有原文。
 6. **log 遮蔽**：`password`、`pdfPassword`、`legalName`、`idNumber`、`idToken`、`authorization`、金鑰等欄位名稱在任何一層都會被換成 `[已遮蔽]`。
-7. 上線後驗收（兩支手機）：
+7. **smoke test（部署後先跑，任一項不對就回退或修 env）**：
+   - `curl https://<server>/health`：`fieldKey` 是 `true`、`fieldKeyMismatch` **不是** `true`（`false` 或還沒檢查完的 `null`；幾秒後再打一次應為 `false`）、
+     `fieldKeyFingerprint` 跟離線備份的指紋一樣。
+   - server log 有一行 `audit log append-only trigger ensured`（沒有的話看第 2 點）。
+8. 上線後驗收（兩支手機）：
    - Apple 開「全貌」→ 最下面「帳單戶名」登記自己的名字 → 只顯示遮罩（王＊明）。
    - Shark 開「記帳簿」交易列表（要有 Apple 個人帳戶、可見範圍＝全家看明細的交易）→ Apple 的「存取紀錄 → 誰看過我的」出現一行。
    - LINE 對任一筆記帳按「刪除」→「全家紀錄」出現，來源顯示 LINE。

@@ -15,6 +15,7 @@ import GoalsSection from '@/components/GoalsSection';
 import TransfersSection, { type TransferKind, type TransferPreset } from '@/components/TransfersSection';
 import LiabilitiesSection from '@/components/LiabilitiesSection';
 import NetWorthSection from '@/components/NetWorthSection';
+import { Icon } from '@/components/Icon';
 
 type MeResp =
   | { joined: false }
@@ -37,20 +38,13 @@ type Settlement = {
 type Tab = 'overview' | 'hub' | 'tx' | 'accounts' | 'more';
 
 const PIE_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#14b8a6', '#a855f7', '#64748b'];
-// 全貌分頁用線條圖示（新功能不放 emoji）
-const HubIcon = () => (
-  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="inline-block">
-    <path d="M3 3v18h18" />
-    <path d="M7 15l4-4 3 3 5-6" />
-  </svg>
-);
-
+// 分頁圖示一律用 components/Icon（介面不放 emoji）
 const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
-  { key: 'overview', label: '總覽', icon: '📊' },
-  { key: 'hub', label: '全貌', icon: <HubIcon /> },
-  { key: 'tx', label: '明細', icon: '📝' },
-  { key: 'accounts', label: '帳戶', icon: '💳' },
-  { key: 'more', label: '更多', icon: '⚙️' },
+  { key: 'overview', label: '總覽', icon: <Icon name="overview" /> },
+  { key: 'hub', label: '全貌', icon: <Icon name="hub" /> },
+  { key: 'tx', label: '明細', icon: <Icon name="list" /> },
+  { key: 'accounts', label: '帳戶', icon: <Icon name="card" /> },
+  { key: 'more', label: '更多', icon: <Icon name="more" /> },
 ];
 
 const currentMonth = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
@@ -145,7 +139,7 @@ export default function Home() {
         <nav className="mx-auto hidden max-w-3xl gap-1 px-4 md:flex">
           {TABS.map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)} className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium ${tab === t.key ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
-              {t.icon} {t.label}
+              <span className="inline-flex items-center gap-1.5">{t.icon}{t.label}</span>
             </button>
           ))}
         </nav>

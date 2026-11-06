@@ -13,7 +13,7 @@
 //
 // fail-closed：金鑰沒設、長度不對、版本找不到 → 一律丟 FieldKeyError，不退回明文、不寫入。
 // 只影響「要寫或讀敏感欄位」的功能；其他記帳功能照常（開機不會因為沒設金鑰而起不來）。
-import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto';
 
 export const FIELD_CIPHER_PREFIX = 'lfe:';
 
@@ -152,4 +152,27 @@ export function reencryptField(cipher: string, ctx: FieldContext, env: Env = pro
 /** 只給測試用：清掉金鑰快取。 */
 export function resetFieldKeyCacheForTest(): void {
   cached = null;
+}
+
+/**
+ * 目前金鑰的指紋（LOW-2）：sha256(金鑰的 32 bytes) 的前 8 個 hex 字元。給 /health 與離線備份核對用——
+ * 只露 32 bits 的雜湊，推不回金鑰；金鑰本身絕不輸出。金鑰不可用時回 null。
+ * 離線核對（備份的金鑰）：在本機跑 `node server/dist/scripts/field-key-fingerprint.js`，從標準輸入貼上金鑰（不進 shell 歷史）。
+ */
+export function fieldKeyFingerprint(env: Env = process.env): string | null {
+  try {
+    const r = ring(env);
+    return keyFingerprint(r.keys.get(r.current)!);
+  } catch {
+    return null;
+  }
+}
+
+/** 金鑰字串（hex／base64／base64url）→ 指紋；格式不對丟 FieldKeyError。 */
+export function fingerprintOfKeyString(raw: string): string {
+  return keyFingerprint(parseKey(raw, 'key'));
+}
+
+export function keyFingerprint(key: Buffer): string {
+  return createHash('sha256').update(key).digest('hex').slice(0, 8);
 }

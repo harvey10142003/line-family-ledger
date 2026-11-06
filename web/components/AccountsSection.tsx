@@ -144,7 +144,7 @@ export default function AccountsSection({ userId, memberId, rev = 0 }: { userId:
       </div>
 
       <div className="mb-3 rounded-md bg-gray-50 px-3 py-2">
-        <span className="text-xs text-gray-500">總資產（含負債）</span>
+        <span className="text-xs text-gray-500">帳戶合計</span>
         <p className={`text-xl font-semibold ${total < 0 ? 'text-red-500' : 'text-gray-800'}`}>{ntd(total)}</p>
       </div>
 
