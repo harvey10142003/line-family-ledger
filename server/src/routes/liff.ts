@@ -17,8 +17,9 @@ import {
   getPayments,
   suggestPaymentSplit,
 } from '../services/liability';
-import { getCardStatements, createCardStatement } from '../services/card-statement';
+import { getCardStatements, getCardPrepaid, createCardStatement } from '../services/card-statement';
 import { TransferRuleError } from '../lib/transfer-rules';
+import { ledgerExportCsv } from '../lib/csv';
 import { getRecurringRules, createRecurringRule, updateRecurringRule, deleteRecurringRule } from '../services/recurring';
 import { loadAccessScope, getWritableTransaction } from '../services/access';
 import { AccessError, type AccessScope } from '../lib/access';
@@ -433,7 +434,8 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     try {
       const items = await getCardStatements(member.familyId, req.params.id, scope);
       await recordPersonalViews({ scope, channel: 'LIFF', targetType: 'CARD_STATEMENT', targetId: req.params.id, owners: [scope.card(req.params.id)?.ownerMemberId] });
-      return res.json({ items });
+      // prepaid：還沒沖到任何一期的繳卡費（預繳），下一期帳單建立時自動抵扣
+      return res.json({ items, prepaid: await getCardPrepaid(member.familyId, req.params.id) });
     } catch (err) {
       return fail(res, err);
     }
@@ -827,26 +829,8 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     }
     await recordPersonalViews({ scope, channel: 'LIFF', targetType: 'EXPORT', owners: items.map((t) => txSubject(scope, t)), detail: { month }, dedupe: false });
 
-    const esc = (v: unknown) => {
-      const s = String(v ?? '');
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const header = ['日期', '類型', '分類', '帳戶', '備註', '金額', '記錄者', '來源'];
-    const lines = items.map((t) =>
-      [
-        ymdTaipei(new Date(t.paidAt)), // paidAt 是 UTC ISO 字串，要轉台北日期
-        t.type === 'INCOME' ? '收入' : '支出',
-        t.categoryName,
-        t.accountName ?? '',
-        t.note ?? '',
-        t.amount,
-        t.memberName,
-        t.source,
-      ]
-        .map(esc)
-        .join(','),
-    );
-    const csv = '﻿' + [header.join(','), ...lines].join('\r\n');
+    // 每一格走 lib/csv.ts（MED-2 防公式注入：=HYPERLINK 之類加 '、字串一律加引號、金額數字不動）
+    const csv = ledgerExportCsv(items);
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="ledger-${month}.csv"`);

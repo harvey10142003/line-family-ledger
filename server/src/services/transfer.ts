@@ -65,7 +65,7 @@ export type CreateTransferInput = {
   note?: unknown;
   transferredAt?: unknown; // YYYY-MM-DD（台北）；不給＝現在
   source?: unknown;
-  confirmOverpay?: unknown; // 繳卡費超過本期應繳時，要明確確認才收（溢繳）
+  confirmOverpay?: unknown; // 繳卡費超過本期應繳（溢繳），或找不到可沖的帳單（預繳，no_statement_needs_confirm）時，要明確確認才收
 };
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
@@ -103,6 +103,18 @@ async function pickStatement(tx: Tx, familyId: string, cardId: string, statement
     return s;
   }
   return tx.cardStatement.findFirst({ where: { familyId, cardId, status: { not: 'PAID' } }, orderBy: { statementDate: 'desc' } });
+}
+
+/**
+ * 某張卡的「預繳／溢繳餘額」：已生效、沒撤銷、還沒沖到任何一期帳單的繳卡費加總。
+ * 不另開欄位：沖到帳單時把那筆轉帳的 cardStatementId 填上即可（card-statement.ts），撤銷照舊（沒沖帳單＝沒東西要還原）。
+ */
+export async function cardPrepaid(db: Tx | typeof prisma, familyId: string, cardId: string): Promise<number> {
+  const r = await db.transfer.aggregate({
+    where: { familyId, kind: 'CARD_PAYMENT', toCreditCardId: cardId, cardStatementId: null, undoneAt: null, confirmStatus: 'CONFIRMED' },
+    _sum: { amount: true },
+  });
+  return r2(n(r._sum.amount));
 }
 
 /** 帳單已繳金額加 delta 後重算狀態（在交易內做，UPDATE 會鎖住該列，同時繳兩次也不會算錯）。 */
@@ -196,7 +208,19 @@ async function applyEffects(
   let statement: Effects['statement'] = null;
   if (kind === 'CARD_PAYMENT') {
     const s = await pickStatement(tx, familyId, to.id, p.cardStatementId);
-    if (s) {
+    if (!s) {
+      // 沒有可沖的帳單（卡還沒有帳單，或最近一期已繳清又再繳）：錢不能憑空消失——
+      // 確認後記成這張卡的「預繳」（cardStatementId 留空），淨資產算成資產；之後建立新帳單時自動抵扣（card-statement.ts）。
+      if (!p.confirmOverpay) {
+        const latest = await tx.cardStatement.findFirst({ where: { familyId, cardId: to.id }, orderBy: { statementDate: 'desc' }, select: { id: true } });
+        throw new TransferRuleError('no_statement_needs_confirm', latest ? '這張卡最近一期帳單已繳清，這筆會記成預繳' : '這張卡還沒有帳單，這筆會記成預繳', 409, {
+          reason: latest ? 'all_paid' : 'no_statement',
+          latestStatementId: latest?.id ?? null,
+          prepaidBefore: await cardPrepaid(tx, familyId, to.id),
+          amount,
+        });
+      }
+    } else {
       statement = await bumpStatement(tx, s.id, amount, p.now);
       if (statement.overpaid > 0 && !p.confirmOverpay) {
         throw new TransferRuleError('overpay_needs_confirm', `本期應繳 ${statement.newBalance}，這次會溢繳 ${statement.overpaid}`, 409, {
@@ -596,7 +620,11 @@ export async function replaceTransfer(
     source: tr.source,
     confirmOverpay: true,
   };
-  if (tr.kind === 'CARD_PAYMENT' && input.kind === 'CARD_PAYMENT' && input.toCreditCardId === tr.toCreditCardId) input.cardStatementId = tr.cardStatementId;
+  if (tr.kind === 'CARD_PAYMENT' && input.kind === 'CARD_PAYMENT' && input.toCreditCardId === tr.toCreditCardId) {
+    input.cardStatementId = tr.cardStatementId;
+    // 原本就是已確認的預繳（沒沖到帳單）→ 同一張卡改金額時不用再問一次預繳
+    if (!tr.cardStatementId && tr.confirmStatus === 'CONFIRMED') input.confirmOverpay = true;
+  }
   const counterpartConfirm = tr.source === 'TEXT';
   await undoTransfer(familyId, memberId, id, scope, now);
   try {

@@ -38,6 +38,7 @@ export class TransferRuleError extends Error {
       | 'split_mismatch'
       | 'exceeds_principal'
       | 'overpay_needs_confirm'
+      | 'no_statement_needs_confirm'
       | 'already_undone'
       | 'not_creator'
       | 'not_counterpart'

@@ -50,6 +50,7 @@ const G: Record<string, any[]> = {
   'Apple 轉 2000 給我': [{ ...blank, intent: 'TRANSFER', segment: 'Apple 轉 2000 給我', amount: 2000, transferKind: 'SPOUSE', fromText: 'Apple', toText: '我' }],
   'Apple 轉 3000 給我': [{ ...blank, intent: 'TRANSFER', segment: 'Apple 轉 3000 給我', amount: 3000, transferKind: 'SPOUSE', fromText: 'Apple', toText: '我' }],
   '從臺銀繳國泰卡 24261': [{ ...blank, intent: 'TRANSFER', segment: '從臺銀繳國泰卡 24261', amount: 24261, transferKind: 'CARD_PAYMENT', fromText: '臺銀', toText: '國泰卡' }],
+  '從臺銀繳台新卡 3000': [{ ...blank, intent: 'TRANSFER', segment: '從臺銀繳台新卡 3000', amount: 3000, transferKind: 'CARD_PAYMENT', fromText: '臺銀', toText: '台新卡' }],
   '臺銀轉 1000 到國泰': [{ ...blank, intent: 'TRANSFER', segment: '臺銀轉 1000 到國泰', amount: 1000, transferKind: 'ACCOUNT', fromText: '臺銀', toText: '國泰' }],
   '午餐 120 刷卡號 [卡號末4:9999]': [{ ...blank, segment: '午餐 120', amount: 1200, categoryName: '餐飲', note: '午餐' }],
 };
@@ -499,4 +500,35 @@ test('快照時間點：10 月底之後才借出的 5000、才建的房貸不算
   assert.ok(!b.composition.liabilities.some((a: any) => a.key === 'mortgage'));
   // 10 月的卡帳單（10/5 結帳、應繳 24261、10 月底前沒繳）算負債
   assert.ok(b.composition.liabilities.some((a: any) => a.key === 'card' && a.amount === 24261));
+});
+
+// MED-1：文字記帳繳卡費找不到可沖的帳單 → 聊天裡問「確定預繳」；按確定才記（同溢繳的確認流程）
+test('「從臺銀繳台新卡 3000」（台新卡還沒有帳單）→ 問確定預繳；取消不記；確定才記成預繳，帳單建立時抵扣', { skip: SKIP }, async () => {
+  const card = await prisma.creditCard.create({ data: { familyId: FAM, name: '台新卡', creditLimit: 50000, statementDay: 10, dueDay: 25 } });
+  const b0 = await balances();
+  const count0 = await prisma.transfer.count({ where: { familyId: FAM, toCreditCardId: card.id } });
+
+  await say('shark', '從臺銀繳台新卡 3000');
+  assert.ok(replyText().includes('還沒有登錄帳單') && replyText().includes('預繳'), replyText());
+  const qr = JSON.stringify(lastReply().messages.at(-1).quickReply);
+  assert.ok(qr.includes('確定預繳') && qr.includes('action=lp_overpay'), qr);
+  assert.equal(await prisma.transfer.count({ where: { familyId: FAM, toCreditCardId: card.id } }), count0, '還沒確認不記');
+  await press('shark', 'action=lp_cancel');
+  assert.deepEqual(await balances(), b0);
+
+  await say('shark', '從臺銀繳台新卡 3000');
+  await press('shark', 'action=lp_overpay');
+  // 不用 lastTransfer()：前面 LIFF 建的轉帳用真實時間，createdAt 比測試時鐘晚
+  const tr = await prisma.transfer.findFirst({ where: { familyId: FAM, toCreditCardId: card.id } });
+  assert.deepEqual([tr.kind, tr.toCreditCardId, tr.cardStatementId, tr.source], ['CARD_PAYMENT', card.id, null, 'TEXT']);
+  const b1 = await balances();
+  assert.equal(b1[A.bot] - b0[A.bot], -3000);
+  assert.equal((await call('shark', 'GET', `/credit-cards/${card.id}/statements`)).json.prepaid, 3000);
+
+  const st = await call('shark', 'POST', `/credit-cards/${card.id}/statements`, { statementDate: '2026-11-10', dueDate: '2099-11-25', newBalance: 4000 });
+  assert.deepEqual([st.json.paidAmount, st.json.status, st.json.remaining], [3000, 'PARTIAL', 1000]);
+  await call('shark', 'POST', `/transfers/${tr.id}/undo`);
+  await prisma.cardStatement.deleteMany({ where: { cardId: card.id } });
+  await prisma.transfer.deleteMany({ where: { toCreditCardId: card.id } });
+  await prisma.creditCard.delete({ where: { id: card.id } });
 });

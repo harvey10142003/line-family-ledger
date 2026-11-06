@@ -181,13 +181,21 @@ async function continueFlow(
   for (const step of res.steps) {
     if (step.type !== 'TRANSFER' || done.has(step.index)) continue;
     const r = await executeTransfer(member.familyId, member.id, step, scope, now, { confirmOverpay: opts.confirmOverpay });
-    if (!r.ok && r.error instanceof TransferRuleError && r.error.code === 'overpay_needs_confirm') {
+    if (!r.ok && r.error instanceof TransferRuleError && (r.error.code === 'overpay_needs_confirm' || r.error.code === 'no_statement_needs_confirm')) {
+      // 溢繳與預繳（找不到可沖的帳單）共用同一個確認流程：按確認＝帶 confirmOverpay 重跑同一個 transfer 出口
       states.set(member.lineUserId, { type: 'overpay', familyId: member.familyId, memberId: member.id, ...st, done: [...done], at: now.getTime() });
-      const d = r.error.detail as { newBalance: number; overpaid: number };
+      const detail = (r.error.detail ?? {}) as { newBalance?: number; overpaid?: number; reason?: 'no_statement' | 'all_paid'; amount?: number };
+      const question =
+        r.error.code === 'overpay_needs_confirm'
+          ? { body: `這張卡本期應繳 ${ntd(detail.newBalance ?? 0)}，這次會溢繳 ${ntd(detail.overpaid ?? 0)}，確定照這個金額記嗎？`, label: '確定溢繳' }
+          : {
+              body: `${detail.reason === 'all_paid' ? '這張卡最近一期帳單已經繳清' : '這張卡還沒有登錄帳單'}，這筆 ${ntd(detail.amount ?? 0)} 會先記成預繳，下期帳單建立時自動抵扣。確定照這樣記嗎？`,
+              label: '確定預繳',
+            };
       await reply(replyToken, [
         ...(transfers.length ? [transferCarousel(await cardsOf(member, transfers, candidates, members))] : []),
-        text(`這張卡本期應繳 ${ntd(d.newBalance)}，這次會溢繳 ${ntd(d.overpaid)}，確定照這個金額記嗎？`, {
-          items: [qrPostback('確定溢繳', 'action=lp_overpay'), qrPostback('取消', 'action=lp_cancel', '取消這筆')],
+        text(question.body, {
+          items: [qrPostback(question.label, 'action=lp_overpay'), qrPostback('取消', 'action=lp_cancel', '取消這筆')],
         }),
       ]);
       return;
@@ -451,6 +459,10 @@ export function transferErrorText(err: unknown): string {
         return '兩端都是別人的個人帳戶，請由本人記這筆。';
       case 'exceeds_principal':
         return `還款金額超過剩餘本金（${err.message}）。`;
+      case 'overpay_needs_confirm':
+      case 'no_statement_needs_confirm':
+        // 改金額／改帳戶時才會走到這裡（新記一筆走 continueFlow 的確認問句）：這次沒改，舊的那筆維持原樣
+        return `${err.message}。這次沒有改，原本那筆維持不變；要溢繳或預繳請重新記一筆，或到記帳簿修改。`;
       default:
         return err.message;
     }

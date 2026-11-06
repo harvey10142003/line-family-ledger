@@ -115,7 +115,8 @@ export default function TransfersSection({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const [overpay, setOverpay] = useState<number | null>(null);
+  // 繳卡費要再確認：溢繳（超過本期應繳）或預繳（找不到可沖的帳單，記成預繳、下期帳單自動抵扣）
+  const [overpay, setOverpay] = useState<{ kind: 'overpay' | 'prepay'; amount: number; allPaid?: boolean } | null>(null);
 
   const [kind, setKind] = useState<TransferKind>('ACCOUNT');
   const [from, setFrom] = useState('');
@@ -263,7 +264,11 @@ export default function TransfersSection({
         return;
       }
       if (r.data?.code === 'overpay_needs_confirm') {
-        setOverpay(r.data.detail?.overpaid ?? null);
+        setOverpay({ kind: 'overpay', amount: Number(r.data.detail?.overpaid ?? 0) });
+        return;
+      }
+      if (r.data?.code === 'no_statement_needs_confirm') {
+        setOverpay({ kind: 'prepay', amount: Number(r.data.detail?.amount ?? amount), allPaid: r.data.detail?.reason === 'all_paid' });
         return;
       }
       setMsg(ERR_TEXT[r.data?.code] ?? `沒有成功（${r.status}）`);
@@ -363,7 +368,7 @@ export default function TransfersSection({
               {statement.statementDate} 帳單：應繳 {ntd(statement.newBalance)}，已繳 {ntd(statement.paidAmount)}，截止 {statement.dueDate}
             </p>
           )}
-          {toCard && to && !statement && <p className="text-xs text-gray-400">這張卡沒有未繳清的帳單，繳款只會記成轉帳。</p>}
+          {toCard && to && !statement && <p className="text-xs text-gray-400">這張卡沒有未繳清的帳單，這筆會記成預繳，下期帳單建立時自動抵扣。</p>}
 
           {kind === 'LOAN_REPAY' && (
             <div className="flex gap-2">
@@ -389,9 +394,11 @@ export default function TransfersSection({
           {msg && <p className="text-xs text-amber-600">{msg}</p>}
           {overpay != null && (
             <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
-              這次會溢繳 {ntd(overpay)}，確定要繳這麼多嗎？
+              {overpay.kind === 'overpay'
+                ? `這次會溢繳 ${ntd(overpay.amount)}，確定要繳這麼多嗎？`
+                : `${overpay.allPaid ? '這張卡最近一期帳單已繳清' : '這張卡還沒有登錄帳單'}，這筆 ${ntd(overpay.amount)} 會先記成預繳，下期帳單建立時自動抵扣。確定嗎？`}
               <div className="mt-2 flex gap-2">
-                <button onClick={() => submit(true)} disabled={busy} className="rounded-md bg-amber-500 px-3 py-1.5 text-white">確定溢繳</button>
+                <button onClick={() => submit(true)} disabled={busy} className="rounded-md bg-amber-500 px-3 py-1.5 text-white">{overpay.kind === 'overpay' ? '確定溢繳' : '確定預繳'}</button>
                 <button onClick={() => setOverpay(null)} className="rounded-md border border-amber-200 px-3 py-1.5">改金額</button>
               </div>
             </div>
