@@ -55,6 +55,13 @@ schema 只加不改（`Transaction.fxRate／fxRateDate／fxRateSource` 3 個可�
 已記的外幣交易 `amount` 是當時用臺銀匯率算好的台幣，回退後照舊顯示；只是之後新記的外幣改回 env／固定值估算。
 回退仍要 SKIP_DB_PUSH（舊 schema 的 db push 會想刪新表與 3 欄而失敗）。
 
+### 匯率來源改關務署每旬報關匯率（11-07，fix/fx-official-source，接在 0a11936 之後）
+
+沒有 schema 變更（沿用 `FxRateDaily`，新資料 `source='CUSTOMS'`、`rateDate`＝旬首），不用 db push。
+出網要能連 `portal.sw.nat.gov.tw:443`。回退到 0a11936 不會壞：舊程式查表不分 source，已存的關務署那幾列會被當成臺銀即期賣出照用
+（數字同級、口徑標示變成「臺銀 MM/DD 即期賣出」），之後又回到每天抓臺銀、被擋、退回 env／固定值。
+已記的外幣交易 `fxRateSource='CUSTOMS_SELL'` 回退後照舊顯示。
+
 ### 財務中樞 P0 資安（11-06，feat/finance-hub-p0-security，接在 c834706 之後）多出來的檢查
 
 schema 只加不改（新表 `AuditLog`，預期 SQL 見 `finance-hub-p0-security-expected-db-push.sql`）。舊程式不讀 `AuditLog` 與

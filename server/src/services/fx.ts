@@ -1,55 +1,68 @@
-// 臺銀牌告匯率：每天抓一次存 FxRateDaily，記帳時依消費日換算外幣。
+// 外幣參考匯率：每天抓一次關務署「每旬報關匯率」存 FxRateDaily，記帳時依消費日換算外幣。
 //
-// 原則（11-05 Shark 決定）：
+// 原則（11-05 Shark 決定，11-07 換來源後照舊）：
 // - 抓取失敗不影響記帳：查不到就退回 env FX_REFERENCE_RATES，再退回固定值，交易一律標 amountEstimated＋匯率來源。
-// - 不推 LINE：連續缺 2 個營業日以上只寫 error log，/health 的 fx 欄位看得到。
-// - 只連 rate.bot.com.tw、逾時 10 秒、不跟隨轉址（轉址＝失敗）。
-// 解析與退回順序的規則在 lib/fx-rates.ts（純函式、有單元測試）。
+// - 不推 LINE：缺 2 個營業日以上只寫 error log，/health 的 fx 欄位看得到。
+// - 只連 portal.sw.nat.gov.tw、逾時 10 秒、不跟隨轉址（轉址＝失敗）。
+// - 來源拒絕存取（防機器人驗證頁、403／429）→ 記一筆清楚的 log、冷卻 12 小時不再打，不重試、不繞過。
+//
+// 11-07 起不再抓臺銀牌告（rate.bot.com.tw 從 GCP 主機只回防機器人驗證頁，且臺銀沒有程式存取用的官方 API）。
+// DB 裡之前存的臺銀資料（source='BOT'）照舊可查。來源說明、換算口徑差異見 lib/fx-rates.ts 檔頭。
 import { prisma } from '../prisma';
 import { logger } from '../logger';
 import {
+  FX_MAX_LOOKAHEAD_DAYS,
   FX_MAX_LOOKBACK_DAYS,
   addDaysYmd,
   convertToTwd,
-  datesToBackfill,
-  isWeekendYmd,
-  parseBotCsv,
+  countMissingBusinessDays,
+  coveredThrough,
+  isAccessRefused,
+  parseCustomsJson,
   resolveFxQuote,
-  type BotRateRow,
+  type CustomsRateRow,
   type FxDbRow,
   type FxQuote,
+  type TenDayPeriod,
 } from '../lib/fx-rates';
 import { ymdTaipei } from '../lib/time-tw';
 import type { LedgerPlan } from '../lib/ledger-plan';
 
-export const BOT_HOST = 'rate.bot.com.tw';
-const BOT_CSV_BASE = `https://${BOT_HOST}/xrt/flcsv/0/`;
+export const CUSTOMS_HOST = 'portal.sw.nat.gov.tw';
+export const CUSTOMS_JSON_URL = `https://${CUSTOMS_HOST}/APGQ/GC331!downLoad?formBean.downLoadFile=CURRENT_JSON`;
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_BODY_BYTES = 256 * 1024;
+/** 來源拒絕存取後多久內不再打 */
+export const FX_REFUSED_COOLDOWN_MS = 12 * 3600_000;
+// 據實表明身分（不偽裝瀏覽器）
+const USER_AGENT = 'family-ledger-fx/1.0 (+https://money.ugomk.com)';
 
 export type FxFetchResult =
-  | { kind: 'rates'; rows: BotRateRow[] }
-  | { kind: 'no_data' }
+  | { kind: 'rates'; period: TenDayPeriod; rows: CustomsRateRow[] }
+  | { kind: 'refused'; reason: string } // 來源拒絕存取：不重試
   | { kind: 'error'; reason: string };
 
-/** 抓某一天的臺銀牌告（收盤價）。只連臺銀網域、10 秒逾時、不跟隨轉址。 */
-export async function fetchBotRates(ymd: string): Promise<FxFetchResult> {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return { kind: 'error', reason: `bad date ${ymd}` };
-  const url = new URL(BOT_CSV_BASE + ymd);
-  if (url.protocol !== 'https:' || url.hostname !== BOT_HOST) return { kind: 'error', reason: 'host not allowed' };
+/** 抓關務署當期報關匯率。只連關務署網域、10 秒逾時、不跟隨轉址。 */
+export async function fetchCustomsRates(): Promise<FxFetchResult> {
+  const url = new URL(CUSTOMS_JSON_URL);
+  if (url.protocol !== 'https:' || url.hostname !== CUSTOMS_HOST) return { kind: 'error', reason: 'host not allowed' };
   try {
-    const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), headers: { Accept: 'text/csv' } });
+    const res = await fetch(url, {
+      redirect: 'manual',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+    });
     if (res.status >= 300 && res.status < 400) return { kind: 'error', reason: `redirect ${res.status} (not followed)` };
-    if (!res.ok) return { kind: 'error', reason: `http ${res.status}` };
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length > MAX_BODY_BYTES) return { kind: 'error', reason: `body too large ${buf.length}` };
     const text = buf.toString('utf8');
-    const parsed = parseBotCsv(text);
+    if (isAccessRefused(res.status, res.headers.get('content-type'), text)) {
+      return { kind: 'refused', reason: `source refused access (http ${res.status}${res.ok ? ', challenge/block page' : ''})` };
+    }
+    if (!res.ok) return { kind: 'error', reason: `http ${res.status}` };
+    const parsed = parseCustomsJson(text);
     if (parsed.kind === 'rates') return parsed;
-    if (parsed.kind === 'no_data') return parsed;
-    // 臺銀前面有防機器人機制，偶爾回挑戰頁（HTTP 200 的 HTML）而不是 CSV → 當作失敗，下次再抓
-    const challenge = /Challenge Validation|sec-cpt|sec_cpt/i.test(text);
-    return { kind: 'error', reason: challenge ? 'bot challenge page (not CSV)' : parsed.reason };
+    return { kind: 'error', reason: parsed.reason };
   } catch (err: any) {
     const reason = err?.name === 'TimeoutError' || err?.name === 'AbortError' ? `timeout ${FETCH_TIMEOUT_MS}ms` : String(err?.message ?? err);
     return { kind: 'error', reason };
@@ -59,15 +72,19 @@ export async function fetchBotRates(ymd: string): Promise<FxFetchResult> {
 const dateOf = (ymd: string) => new Date(`${ymd}T00:00:00Z`);
 const ymdOfDate = (d: Date) => d.toISOString().slice(0, 10);
 
-/** 存一天的牌告（同一天重抓就覆寫，數字是收盤價、本來就一樣）。即期與現金賣出都沒有的幣別不存。 */
-export async function saveRates(ymd: string, rows: BotRateRow[], fetchedAt = new Date()): Promise<number> {
-  const keep = rows.filter((r) => r.spotSell || r.cashSell);
+/**
+ * 存一旬的報關匯率：每幣一列，rateDate＝該旬第一天，source='CUSTOMS'，買→spotBuy、賣→spotSell（沒有現金價）。
+ * 同一旬重抓就覆寫。
+ */
+export async function saveCustomsRates(period: TenDayPeriod, rows: CustomsRateRow[], fetchedAt = new Date()): Promise<number> {
+  const keep = rows.filter((r) => r.sell);
+  const rateDate = dateOf(period.start);
   await prisma.$transaction(
     keep.map((r) =>
       prisma.fxRateDaily.upsert({
-        where: { currency_rateDate: { currency: r.currency, rateDate: dateOf(ymd) } },
-        create: { currency: r.currency, rateDate: dateOf(ymd), spotBuy: r.spotBuy, spotSell: r.spotSell, cashBuy: r.cashBuy, cashSell: r.cashSell, source: 'BOT', fetchedAt },
-        update: { spotBuy: r.spotBuy, spotSell: r.spotSell, cashBuy: r.cashBuy, cashSell: r.cashSell, source: 'BOT', fetchedAt },
+        where: { currency_rateDate: { currency: r.currency, rateDate } },
+        create: { currency: r.currency, rateDate, spotBuy: r.buy, spotSell: r.sell, cashBuy: null, cashSell: null, source: 'CUSTOMS', fetchedAt },
+        update: { spotBuy: r.buy, spotSell: r.sell, cashBuy: null, cashSell: null, source: 'CUSTOMS', fetchedAt },
       }),
     ),
   );
@@ -76,57 +93,55 @@ export async function saveRates(ymd: string, rows: BotRateRow[], fetchedAt = new
 
 // ---- 狀態（/health 的 fx 欄位）----
 interface FxStatus {
-  latestRateDate: string | null;
+  latestRateDate: string | null; // 最新一筆的日期（關務署＝該旬第一天）
+  coveredThrough: string | null; // 匯率涵蓋到哪天（關務署＝旬底）
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   lastError: string | null;
-  missingBusinessDays: number; // 最近一筆牌告之後、應該要有卻沒抓到的營業日數（假日／查無資料不算）
+  refusedUntil: string | null; // 來源拒絕存取後的冷卻期限；期限內不再打
+  missingBusinessDays: number; // 涵蓋日之後到今天、沒有匯率的平日數
 }
-const status: FxStatus = { latestRateDate: null, lastAttemptAt: null, lastSuccessAt: null, lastError: null, missingBusinessDays: 0 };
-const noDataDates = new Set<string>(); // 臺銀回「查無資料」的平日（國定假日），不再重抓
+const status: FxStatus = {
+  latestRateDate: null,
+  coveredThrough: null,
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastError: null,
+  refusedUntil: null,
+  missingBusinessDays: 0,
+};
 let alertedLevel = 0;
 
 export function fxHealth() {
-  return { source: 'BOT', schedule: 'weekdays 16:30 Asia/Taipei + on boot', ...status };
+  return { source: 'CUSTOMS', schedule: 'daily 16:30 Asia/Taipei + on boot', ...status };
 }
 
 /** 測試用：重設記憶體狀態 */
 export function resetFxStatusForTest() {
-  Object.assign(status, { latestRateDate: null, lastAttemptAt: null, lastSuccessAt: null, lastError: null, missingBusinessDays: 0 });
-  noDataDates.clear();
+  Object.assign(status, {
+    latestRateDate: null,
+    coveredThrough: null,
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastError: null,
+    refusedUntil: null,
+    missingBusinessDays: 0,
+  });
   alertedLevel = 0;
-}
-
-function taipeiMinutes(now: Date): number {
-  const t = new Date(now.getTime() + 8 * 3600_000);
-  return t.getUTCHours() * 60 + t.getUTCMinutes();
-}
-
-/** 算「最近一筆之後缺了幾個營業日」：只數平日、已過 16:30 的今天，扣掉查無資料的日子。 */
-function countMissing(latest: string | null, nowYmd: string, nowMin: number, lookback = 14): number {
-  let n = 0;
-  for (let i = 0; i < lookback; i++) {
-    const d = addDaysYmd(nowYmd, -i);
-    if (latest && d <= latest) break;
-    if (isWeekendYmd(d) || noDataDates.has(d)) continue;
-    if (i === 0 && nowMin < 16 * 60 + 30) continue;
-    n++;
-  }
-  return n;
 }
 
 let running: Promise<SyncResult> | null = null;
 export interface SyncResult {
-  saved: { date: string; currencies: number }[];
-  noData: string[];
-  failed: { date: string; reason: string }[];
+  saved: { periodStart: string; periodEnd: string; currencies: number } | null;
+  failed: string | null; // 失敗原因
+  refused: boolean; // 來源拒絕存取（本次或冷卻中）
+  skipped: string | null; // 冷卻中沒打
 }
 
 /**
- * 補抓最近 days 天內還沒存的營業日（排程 16:30 跑、開機跑）。失敗只寫 log，不丟錯。
- * 依序抓、每次間隔 gapMs（不要一次打一串）。同時只跑一個。
+ * 抓當期報關匯率（排程每天 16:30、開機各一次）。一次只發一個請求、失敗不重試，只寫 log，不丟錯。同時只跑一個。
  */
-export function syncFxRates(opts: { now?: Date; days?: number; fetcher?: (ymd: string) => Promise<FxFetchResult>; gapMs?: number } = {}): Promise<SyncResult> {
+export function syncFxRates(opts: { now?: Date; fetcher?: () => Promise<FxFetchResult> } = {}): Promise<SyncResult> {
   if (running) return running;
   running = doSync(opts).finally(() => {
     running = null;
@@ -134,87 +149,98 @@ export function syncFxRates(opts: { now?: Date; days?: number; fetcher?: (ymd: s
   return running;
 }
 
-async function doSync(opts: { now?: Date; days?: number; fetcher?: (ymd: string) => Promise<FxFetchResult>; gapMs?: number }): Promise<SyncResult> {
+async function doSync(opts: { now?: Date; fetcher?: () => Promise<FxFetchResult> }): Promise<SyncResult> {
   const now = opts.now ?? new Date();
-  const days = opts.days ?? 7;
-  const fetcher = opts.fetcher ?? fetchBotRates;
-  const gapMs = opts.gapMs ?? 1500;
-  const nowYmd = ymdTaipei(now);
-  const nowMin = taipeiMinutes(now);
-  const result: SyncResult = { saved: [], noData: [], failed: [] };
+  const fetcher = opts.fetcher ?? fetchCustomsRates;
+  const result: SyncResult = { saved: null, failed: null, refused: false, skipped: null };
   try {
-    const existing = await prisma.fxRateDaily.findMany({
-      where: { rateDate: { gte: dateOf(addDaysYmd(nowYmd, -days)) } },
-      select: { rateDate: true },
-      distinct: ['rateDate'],
-    });
-    const have = new Set(existing.map((r) => ymdOfDate(r.rateDate)));
-    for (const d of noDataDates) have.add(d);
-    const todo = datesToBackfill(have, nowYmd, nowMin, days);
-    status.lastAttemptAt = now.toISOString();
-    for (let i = 0; i < todo.length; i++) {
-      const d = todo[i];
-      if (i > 0 && gapMs > 0) await new Promise((r) => setTimeout(r, gapMs));
-      const r = await fetcher(d);
+    if (status.refusedUntil && now.getTime() < Date.parse(status.refusedUntil)) {
+      result.refused = true;
+      result.skipped = `source refused access earlier; not retrying until ${status.refusedUntil}`;
+    } else {
+      status.lastAttemptAt = now.toISOString();
+      const r = await fetcher();
       if (r.kind === 'rates') {
-        const n = await saveRates(d, r.rows, now);
-        result.saved.push({ date: d, currencies: n });
+        const n = await saveCustomsRates(r.period, r.rows, now);
+        result.saved = { periodStart: r.period.start, periodEnd: r.period.end, currencies: n };
         status.lastSuccessAt = new Date().toISOString();
-      } else if (r.kind === 'no_data') {
-        noDataDates.add(d);
-        result.noData.push(d);
+        status.lastError = null;
+        status.refusedUntil = null;
+      } else if (r.kind === 'refused') {
+        result.refused = true;
+        result.failed = r.reason;
+        status.lastError = `${CUSTOMS_HOST}: ${r.reason}`;
+        status.refusedUntil = new Date(now.getTime() + FX_REFUSED_COOLDOWN_MS).toISOString();
       } else {
-        result.failed.push({ date: d, reason: r.reason });
-        status.lastError = `${d}: ${r.reason}`;
+        result.failed = r.reason;
+        status.lastError = `${CUSTOMS_HOST}: ${r.reason}`;
       }
     }
-    if (result.saved.length && !result.failed.length) status.lastError = null;
     await refreshLatest(now);
   } catch (err) {
     status.lastError = `sync: ${String((err as any)?.message ?? err)}`;
     logger.warn({ err }, 'fx sync failed');
   }
-  if (result.saved.length) logger.info({ saved: result.saved }, 'fx rates saved (Bank of Taiwan)');
-  if (result.failed.length) logger.warn({ failed: result.failed }, 'fx rates fetch failed; bookkeeping falls back to env/default rates');
+  if (result.saved) logger.info({ saved: result.saved }, 'fx rates saved (Customs Administration ten-day rates)');
+  if (result.refused && !result.skipped) {
+    logger.warn(
+      { host: CUSTOMS_HOST, reason: result.failed, refusedUntil: status.refusedUntil },
+      `fx source refused access (來源拒絕存取): ${CUSTOMS_HOST}; not retrying until ${status.refusedUntil}; bookkeeping falls back to stored/env/default rates`,
+    );
+  } else if (result.failed) {
+    logger.warn({ host: CUSTOMS_HOST, reason: result.failed }, 'fx rates fetch failed; bookkeeping falls back to stored/env/default rates');
+  }
   if (status.missingBusinessDays >= 2 && status.missingBusinessDays > alertedLevel) {
     alertedLevel = status.missingBusinessDays;
-    logger.error({ fx: fxHealth() }, `fx rates missing for ${status.missingBusinessDays} business days (Bank of Taiwan); using fallback rates`);
+    logger.error({ fx: fxHealth() }, `fx rates missing for ${status.missingBusinessDays} business days (Customs ten-day rates); using fallback rates`);
   }
   if (status.missingBusinessDays < 2) alertedLevel = 0;
   return result;
 }
 
 async function refreshLatest(now: Date) {
-  const latest = await prisma.fxRateDaily.findFirst({ orderBy: { rateDate: 'desc' }, select: { rateDate: true } });
+  const latest = await prisma.fxRateDaily.findFirst({ orderBy: { rateDate: 'desc' }, select: { rateDate: true, source: true } });
   status.latestRateDate = latest ? ymdOfDate(latest.rateDate) : null;
-  status.missingBusinessDays = countMissing(status.latestRateDate, ymdTaipei(now), taipeiMinutes(now));
+  status.coveredThrough = coveredThrough(latest ? { rateDate: ymdOfDate(latest.rateDate), source: latest.source } : null);
+  status.missingBusinessDays = countMissingBusinessDays(status.coveredThrough, ymdTaipei(now));
 }
 
-/** 消費日當天或之前最近一筆（回看 30 天內）；DB 出錯回 null（退回 env／固定值，不擋記帳）。 */
+const toDbRow = (row: { rateDate: Date; spotSell: unknown; cashSell: unknown; source: string }): FxDbRow => ({
+  rateDate: ymdOfDate(row.rateDate),
+  spotSell: row.spotSell == null ? null : Number(row.spotSell),
+  cashSell: row.cashSell == null ? null : Number(row.cashSell),
+  source: row.source,
+});
+
+/**
+ * 消費日當天或之前最近一筆（回看 30 天內；關務署那筆的日期是旬首，所以會落在消費日所在的旬）。
+ * 之前完全沒有 → 看之後 11 天內有沒有關務署下一旬的數字（當旬內就公布）。DB 出錯回 null（退回 env／固定值，不擋記帳）。
+ */
 export async function lookupFxRow(currency: string, ymd: string): Promise<FxDbRow | null> {
+  const cur = currency.toUpperCase();
   try {
     const row = await prisma.fxRateDaily.findFirst({
-      where: { currency: currency.toUpperCase(), rateDate: { lte: dateOf(ymd), gte: dateOf(addDaysYmd(ymd, -FX_MAX_LOOKBACK_DAYS)) } },
+      where: { currency: cur, rateDate: { lte: dateOf(ymd), gte: dateOf(addDaysYmd(ymd, -FX_MAX_LOOKBACK_DAYS)) } },
       orderBy: { rateDate: 'desc' },
     });
-    if (!row) return null;
-    return {
-      rateDate: ymdOfDate(row.rateDate),
-      spotSell: row.spotSell == null ? null : Number(row.spotSell),
-      cashSell: row.cashSell == null ? null : Number(row.cashSell),
-    };
+    if (row) return toDbRow(row);
+    const next = await prisma.fxRateDaily.findFirst({
+      where: { currency: cur, source: 'CUSTOMS', rateDate: { gt: dateOf(ymd), lte: dateOf(addDaysYmd(ymd, FX_MAX_LOOKAHEAD_DAYS)) } },
+      orderBy: { rateDate: 'asc' },
+    });
+    return next ? toDbRow(next) : null;
   } catch (err) {
     logger.warn({ err, currency, ymd }, 'fx lookup failed; using fallback rate');
     return null;
   }
 }
 
-/** 某幣別在某消費日的參考匯率：臺銀 → env → 固定值。 */
+/** 某幣別在某消費日的參考匯率：DB（關務署／臺銀舊資料）→ env → 固定值。 */
 export async function quoteFx(currency: string, ymd: string, env: NodeJS.ProcessEnv = process.env): Promise<FxQuote | null> {
   return resolveFxQuote(currency, await lookupFxRow(currency, ymd), env);
 }
 
-/** 計畫裡的外幣收支依消費日換成臺銀匯率（計畫階段先用 env／固定值估過，這裡覆寫）。 */
+/** 計畫裡的外幣收支依消費日換成 DB 匯率（計畫階段先用 env／固定值估過，這裡覆寫）。 */
 export async function applyFxToPlan(plan: LedgerPlan, env: NodeJS.ProcessEnv = process.env): Promise<LedgerPlan> {
   for (const it of plan.items) {
     if (it.type !== 'TX' || !it.originalCurrency || it.originalAmount == null) continue;

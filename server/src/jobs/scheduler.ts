@@ -79,10 +79,10 @@ export function startSchedulers(): void {
     { timezone: TZ },
   );
 
-  // 平日 16:30（台北）抓臺銀牌告收盤價（歷史收盤價掛牌時間約 16:00）；開機時補抓最近 7 天缺的營業日。
-  // 抓不到只寫 log（/health 的 fx 欄位看得到），記帳退回 env／固定值，不推 LINE。
+  // 每天 16:30（台北）＋開機各抓一次關務署當期報關匯率（每旬一份、下一旬在當旬內先公布；一次只發一個請求）。
+  // 抓不到只寫 log（/health 的 fx 欄位看得到），記帳退回 DB 舊資料／env／固定值，不推 LINE；來源拒絕存取就冷卻 12 小時。
   cron.schedule(
-    '30 16 * * 1-5',
+    '30 16 * * *',
     () => {
       syncFxRates().catch((err) => logger.error({ err }, 'fx sync job failed'));
     },
@@ -92,5 +92,5 @@ export function startSchedulers(): void {
     syncFxRates().catch((err) => logger.error({ err }, 'fx boot sync failed'));
   }, 15_000).unref();
 
-  logger.info('reminder schedulers started (Asia/Taipei): recurring 08:00, monthly 1st 09:00, weekly Mon 09:00, card due 10:00, nudge 21:00, net worth 1st 08:30, transfer confirm expiry hourly, fx weekdays 16:30 + boot');
+  logger.info('reminder schedulers started (Asia/Taipei): recurring 08:00, monthly 1st 09:00, weekly Mon 09:00, card due 10:00, nudge 21:00, net worth 1st 08:30, transfer confirm expiry hourly, fx daily 16:30 + boot');
 }
