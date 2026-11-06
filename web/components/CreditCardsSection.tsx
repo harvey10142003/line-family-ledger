@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { apiGet, apiPost, apiPut } from '@/lib/api';
 import { OwnershipFields, OwnerBadges, ownershipBody, type Owned, type Visibility } from './OwnershipFields';
+import { Icon } from './Icon';
 
 type Card = {
   id: string;
@@ -124,7 +125,7 @@ export default function CreditCardsSection({ userId, memberId }: { userId: strin
               <li key={c.id}>
                 <button onClick={() => openEdit(c)} disabled={c.canEdit === false} className="w-full rounded-md border border-gray-100 p-3 text-left hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent">
                   <div className="flex items-center justify-between">
-                    <span className="flex items-center gap-1.5 text-sm font-medium">{c.icon ?? '💳'} {c.name}<OwnerBadges item={c} memberId={memberId} /></span>
+                    <span className="flex items-center gap-1.5 text-sm font-medium"><Icon name="card" size={16} className="text-gray-500" />{c.name}<OwnerBadges item={c} memberId={memberId} /></span>
                     <span className="text-xs text-gray-500">額度 {ntd(c.creditLimit)}</span>
                   </div>
                   <div className="mt-1.5 h-2 rounded-full bg-gray-100">

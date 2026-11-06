@@ -102,7 +102,7 @@ export default function BudgetSection({ userId, month, onChanged }: { userId: st
           {status.byCategory.map((c) => (
             <li key={c.categoryId} className="text-sm">
               <div className="flex justify-between">
-                <span>{c.icon ?? ''} {c.name}</span>
+                <span>{c.name}</span>
                 <span className={c.pct >= 100 ? 'font-medium text-red-500' : 'text-gray-500'}>{ntd(c.spent)} / {ntd(c.budget)}</span>
               </div>
               <div className="mt-1 h-2 rounded-full bg-gray-100"><div className={`h-2 rounded-full ${barColor(c.pct)}`} style={{ width: `${Math.min(c.pct, 100)}%` }} /></div>
@@ -119,7 +119,7 @@ export default function BudgetSection({ userId, month, onChanged }: { userId: st
             <ul className="space-y-2">
               {cats.map((c) => (
                 <li key={c.id} className="flex items-center justify-between gap-2">
-                  <span className="text-sm">{c.icon ?? ''} {c.name}</span>
+                  <span className="text-sm">{c.name}</span>
                   <input type="number" inputMode="numeric" value={draft[c.id] ?? ''} onChange={(e) => setDraft((d) => ({ ...d, [c.id]: e.target.value }))} placeholder="0" className="w-28 rounded-md border border-gray-200 px-3 py-1.5 text-sm" />
                 </li>
               ))}

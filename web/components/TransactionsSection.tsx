@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/api';
+import { Icon } from './Icon';
 
 type TxType = 'EXPENSE' | 'INCOME';
 
@@ -222,13 +223,13 @@ export default function TransactionsSection({
                 <button onClick={() => openEdit(t)} disabled={t.canEdit === false} className="flex w-full items-center justify-between py-2.5 px-1 text-left hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent">
                   <div className="min-w-0">
                     <p className="truncate text-sm">
-                      {t.categoryIcon ?? ''} {t.note || t.categoryName}
+                      {t.note || t.categoryName}
                       {t.type === 'EXPENSE' && !t.isShared && <span className="ml-1 rounded bg-gray-100 px-1 py-0.5 text-[10px] text-gray-500">個人</span>}
                       {t.bookTo === 'BUSINESS' && <span className="ml-1 rounded bg-amber-50 px-1 py-0.5 text-[10px] text-amber-700">公司代墊</span>}
                     </p>
                     <p className="text-xs text-gray-400">
                       {t.paidAt.slice(5, 10)}　{t.memberName}
-                      {t.accountName ? `　${t.accountIcon ?? ''}${t.accountName}` : ''}
+                      {t.accountName ? `　${t.accountName}` : ''}
                       {t.recordedByName ? `　${t.recordedByName} 代記` : ''}
                       {t.canEdit === false && '　僅本人可修改'}
                     </p>
@@ -270,7 +271,7 @@ export default function TransactionsSection({
             <div className="mb-2 mt-1 flex flex-wrap gap-1.5">
               {formCats.map((c) => (
                 <button key={c.id} onClick={() => setFCat(c.id)} className={`rounded-full px-3 py-1 text-xs ${fCat === c.id ? 'bg-indigo-500 text-white' : 'border border-gray-200 bg-white text-gray-600'}`}>
-                  {c.icon ?? ''} {c.name}
+                  {c.name}
                 </button>
               ))}
             </div>
@@ -285,11 +286,11 @@ export default function TransactionsSection({
                 <select value={fPay} onChange={(e) => setFPay(e.target.value)} className="mt-1 w-full rounded-lg border border-gray-200 px-2 py-2 text-sm">
                   <option value="">未指定</option>
                   <optgroup label="帳戶">
-                    {accounts.map((a) => <option key={a.id} value={`acc:${a.id}`}>{a.icon ?? ''} {a.name}</option>)}
+                    {accounts.map((a) => <option key={a.id} value={`acc:${a.id}`}>{a.name}</option>)}
                   </optgroup>
                   {cards.length > 0 && (
                     <optgroup label="信用卡">
-                      {cards.map((c) => <option key={c.id} value={`card:${c.id}`}>{c.icon ?? '💳'} {c.name}</option>)}
+                      {cards.map((c) => <option key={c.id} value={`card:${c.id}`}>{c.name}</option>)}
                     </optgroup>
                   )}
                 </select>
@@ -300,8 +301,8 @@ export default function TransactionsSection({
               <div className="mb-2">
                 <span className="text-xs text-gray-500">分帳</span>
                 <div className="mt-1 flex rounded-lg bg-gray-100 p-1">
-                  <button onClick={() => setFShared(true)} className={`flex-1 rounded-md py-1.5 text-sm ${fShared ? 'bg-white font-medium shadow-sm' : 'text-gray-500'}`}>👨‍👩‍👧 共同（分帳）</button>
-                  <button onClick={() => setFShared(false)} className={`flex-1 rounded-md py-1.5 text-sm ${!fShared ? 'bg-white font-medium shadow-sm' : 'text-gray-500'}`}>🧍 個人（不分帳）</button>
+                  <button onClick={() => setFShared(true)} className={`flex flex-1 items-center justify-center gap-1 rounded-md py-1.5 text-sm ${fShared ? 'bg-white font-medium shadow-sm' : 'text-gray-500'}`}><Icon name="users" size={14} />共同（分帳）</button>
+                  <button onClick={() => setFShared(false)} className={`flex flex-1 items-center justify-center gap-1 rounded-md py-1.5 text-sm ${!fShared ? 'bg-white font-medium shadow-sm' : 'text-gray-500'}`}><Icon name="user" size={14} />個人（不分帳）</button>
                 </div>
               </div>
             )}

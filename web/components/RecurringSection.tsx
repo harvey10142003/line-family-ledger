@@ -163,7 +163,7 @@ export default function RecurringSection({ userId, onChanged }: { userId: string
             <li key={r.id} className="flex items-center justify-between rounded-md border border-gray-100 px-3 py-2">
               <button onClick={() => openEdit(r)} disabled={r.canEdit === false} className="min-w-0 flex-1 text-left disabled:cursor-default">
                 <p className="truncate text-sm">
-                  {r.categoryIcon ?? ''} {r.note || r.categoryName}
+                  {r.note || r.categoryName}
                   {r.type === 'EXPENSE' && !r.isShared && <span className="ml-1 rounded bg-gray-100 px-1 text-[10px] text-gray-500">個人</span>}
                 </p>
                 <p className="text-xs text-gray-400">{freqLabel(r)}　{ntd(r.amount)}{r.payName ? `　${r.payName}` : ''}</p>
@@ -193,7 +193,7 @@ export default function RecurringSection({ userId, onChanged }: { userId: string
           <div className="flex flex-wrap gap-1.5">
             {formCats.map((c) => (
               <button key={c.id} onClick={() => setFCat(c.id)} className={`rounded-full px-3 py-1 text-xs ${fCat === c.id ? 'bg-indigo-500 text-white' : 'border border-gray-200 bg-white text-gray-600'}`}>
-                {c.icon ?? ''} {c.name}
+                {c.name}
               </button>
             ))}
           </div>
@@ -224,7 +224,7 @@ export default function RecurringSection({ userId, onChanged }: { userId: string
             <optgroup label="帳戶">
               {accounts.map((a) => (
                 <option key={a.id} value={`acc:${a.id}`}>
-                  {a.icon ?? ''} {a.name}
+                  {a.name}
                 </option>
               ))}
             </optgroup>
@@ -232,7 +232,7 @@ export default function RecurringSection({ userId, onChanged }: { userId: string
               <optgroup label="信用卡">
                 {cards.map((c) => (
                   <option key={c.id} value={`card:${c.id}`}>
-                    {c.icon ?? '💳'} {c.name}
+                    {c.name}
                   </option>
                 ))}
               </optgroup>

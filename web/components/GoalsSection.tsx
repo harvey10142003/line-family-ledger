@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { apiGet, apiPost, apiPut, apiDelete } from '@/lib/api';
+import { Icon } from './Icon';
 
 type Goal = {
   id: string;
@@ -95,13 +96,17 @@ export default function GoalsSection({ userId }: { userId: string }) {
           {goals.map((g) => (
             <li key={g.id} className="rounded-md border border-gray-100 p-3">
               <div className="flex items-center justify-between">
-                <button onClick={() => openEdit(g)} className="text-sm font-medium">{g.icon ?? '🎯'} {g.name}</button>
+                <button onClick={() => openEdit(g)} className="flex items-center gap-1.5 text-sm font-medium"><Icon name="target" size={16} className="text-gray-500" />{g.name}</button>
                 <span className="text-xs text-gray-500">{ntd(g.savedAmount)} / {ntd(g.targetAmount)}</span>
               </div>
               <div className="mt-1.5 h-2.5 rounded-full bg-gray-100"><div className="h-2.5 rounded-full bg-indigo-400" style={{ width: `${g.pct}%` }} /></div>
-              <div className="mt-1.5 flex items-center justify-between">
-                <span className="text-xs text-gray-400">{g.pct}%{g.remaining > 0 ? `　還差 ${ntd(g.remaining)}` : '　達標 🎉'}{g.targetDate ? `　🗓 ${g.targetDate}` : ''}</span>
-                <span className="flex gap-1">
+              <div className="mt-1.5 flex items-center justify-between gap-2">
+                <span className="flex flex-wrap items-center gap-x-3 text-xs text-gray-400">
+                  <span>{g.pct}%</span>
+                  {g.remaining > 0 ? <span>還差 {ntd(g.remaining)}</span> : <span className="inline-flex items-center gap-0.5 text-emerald-600"><Icon name="check" size={12} />達標</span>}
+                  {g.targetDate && <span className="inline-flex items-center gap-0.5"><Icon name="calendar" size={12} />{g.targetDate}</span>}
+                </span>
+                <span className="flex shrink-0 gap-1">
                   <button onClick={() => adjust(g, 1)} className="rounded-md bg-emerald-50 px-2.5 py-1 text-xs text-emerald-600">存入</button>
                   <button onClick={() => adjust(g, -1)} className="rounded-md bg-gray-100 px-2.5 py-1 text-xs text-gray-500">取出</button>
                 </span>

@@ -199,7 +199,7 @@ export default function Home() {
                         const pct = totalExpense > 0 ? Math.round((c.amount / totalExpense) * 100) : 0;
                         return (
                           <li key={c.name} className="flex items-center justify-between text-sm">
-                            <span className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />{c.icon ?? ''} {c.name}</span>
+                            <span className="flex items-center gap-2"><span className="inline-block h-3 w-3 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />{c.name}</span>
                             <span className="text-gray-600">{ntd(c.amount)}　<span className="text-gray-400">{pct}%</span></span>
                           </li>
                         );
@@ -237,7 +237,7 @@ export default function Home() {
                 <h2 className="mb-1 text-sm font-semibold text-gray-700">分帳結算（均分）</h2>
                 <p className="mb-2 text-xs text-gray-400">每人應分攤 {ntd(settlement.perPersonShare)}（{settlement.memberCount} 人）</p>
                 {settlement.transfers.length === 0 ? (
-                  <p className="py-2 text-center text-sm text-gray-400">大家分攤平均，免結算 🎉</p>
+                  <p className="py-2 text-center text-sm text-gray-400">大家分攤平均，免結算</p>
                 ) : (
                   <ul className="space-y-1.5">
                     {settlement.transfers.map((tr, i) => (
@@ -278,8 +278,8 @@ export default function Home() {
             <GoalsSection userId={userId} />
             <section className="rounded-lg bg-white p-4 shadow-sm">
               <h2 className="mb-3 text-sm font-semibold text-gray-700">匯出</h2>
-              <button onClick={doExport} className="w-full rounded-lg border border-gray-200 px-4 py-3 text-left text-sm">
-                ⬇ 匯出本月 CSV（{month}）
+              <button onClick={doExport} className="flex w-full items-center gap-2 rounded-lg border border-gray-200 px-4 py-3 text-left text-sm">
+                <Icon name="download" size={16} />匯出本月 CSV（{month}）
               </button>
               <p className="mt-3 text-xs text-gray-400">更多功能陸續加入：儲蓄目標、趨勢圖、月報…</p>
             </section>

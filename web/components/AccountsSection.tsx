@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { apiGet, apiPost, apiPut } from '@/lib/api';
 import { OwnershipFields, OwnerBadges, ownershipBody, type Owned, type Visibility } from './OwnershipFields';
+import { Icon, type IconName } from './Icon';
 
 type AccountType = 'CASH' | 'BANK' | 'CREDIT_CARD' | 'EPAYMENT' | 'OTHER' | 'TIME_DEPOSIT' | 'SECURITIES' | 'INVESTMENT' | 'CRYPTO';
 
@@ -18,17 +19,17 @@ type Account = {
   sortOrder: number;
 } & Owned;
 
-const TYPE_META: Record<AccountType, { label: string; icon: string }> = {
-  CASH: { label: '現金', icon: '💵' },
-  BANK: { label: '銀行', icon: '🏦' },
-  CREDIT_CARD: { label: '信用卡', icon: '💳' }, // 舊資料顯示用；信用卡已獨立區塊
-  EPAYMENT: { label: '電子錢包', icon: '👛' },
-  OTHER: { label: '其他', icon: '📦' },
-  // 財務中樞新類型：不放 emoji（圖示欄留空）
-  TIME_DEPOSIT: { label: '定存', icon: '' },
-  SECURITIES: { label: '證券', icon: '' },
-  INVESTMENT: { label: '投資', icon: '' },
-  CRYPTO: { label: '虛擬資產', icon: '' },
+// 圖示一律依帳戶類型給 SVG。資料庫 accounts.icon 可能存著舊的 emoji（系統預設寫入），畫面不顯示、資料不動。
+const TYPE_META: Record<AccountType, { label: string; icon: IconName }> = {
+  CASH: { label: '現金', icon: 'cash' },
+  BANK: { label: '銀行', icon: 'bank' },
+  CREDIT_CARD: { label: '信用卡', icon: 'card' }, // 舊資料顯示用；信用卡已獨立區塊
+  EPAYMENT: { label: '電子錢包', icon: 'wallet' },
+  OTHER: { label: '其他', icon: 'box' },
+  TIME_DEPOSIT: { label: '定存', icon: 'bank' },
+  SECURITIES: { label: '證券', icon: 'hub' },
+  INVESTMENT: { label: '投資', icon: 'hub' },
+  CRYPTO: { label: '虛擬資產', icon: 'box' },
 };
 
 // 新增/編輯帳戶可選的類型（信用卡已獨立，不在此）
@@ -110,7 +111,6 @@ export default function AccountsSection({ userId, memberId, rev = 0 }: { userId:
         await apiPost('/api/liff/accounts', userId, {
           name: fName.trim(),
           type: fType,
-          icon: TYPE_META[fType].icon,
           openingBalance: opening,
           ...ownershipBody(fMine, fVis, memberId),
         });
@@ -156,7 +156,7 @@ export default function AccountsSection({ userId, memberId, rev = 0 }: { userId:
             <li key={a.id}>
               <button onClick={() => openEdit(a)} disabled={a.canEdit === false} className="flex w-full items-center justify-between rounded-md px-2 py-2 text-left hover:bg-gray-50 disabled:cursor-default disabled:hover:bg-transparent">
                 <span className="flex items-center gap-2 text-sm">
-                  <span>{a.icon ?? TYPE_META[a.type].icon}</span>
+                  <Icon name={TYPE_META[a.type].icon} size={16} className="text-gray-500" />
                   {a.name}
                   {a.isDefault && <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-500">預設</span>}
                   <OwnerBadges item={a} memberId={memberId} />
@@ -175,8 +175,9 @@ export default function AccountsSection({ userId, memberId, rev = 0 }: { userId:
           <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="帳戶名稱（如 台新銀行）" className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm" />
           <div className="flex flex-wrap gap-1.5">
             {SELECTABLE_TYPES.map((t) => (
-              <button key={t} onClick={() => setFType(t)} className={`rounded-full px-3 py-1 text-xs ${fType === t ? 'bg-indigo-500 text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
-                {TYPE_META[t].icon ? `${TYPE_META[t].icon} ` : ''}{TYPE_META[t].label}
+              <button key={t} onClick={() => setFType(t)} className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs ${fType === t ? 'bg-indigo-500 text-white' : 'bg-white text-gray-600 border border-gray-200'}`}>
+                <Icon name={TYPE_META[t].icon} size={14} />
+                {TYPE_META[t].label}
               </button>
             ))}
           </div>
