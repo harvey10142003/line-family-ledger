@@ -184,14 +184,27 @@ async function continueFlow(
     if (!r.ok && r.error instanceof TransferRuleError && (r.error.code === 'overpay_needs_confirm' || r.error.code === 'no_statement_needs_confirm')) {
       // 溢繳與預繳（找不到可沖的帳單）共用同一個確認流程：按確認＝帶 confirmOverpay 重跑同一個 transfer 出口
       states.set(member.lineUserId, { type: 'overpay', familyId: member.familyId, memberId: member.id, ...st, done: [...done], at: now.getTime() });
-      const detail = (r.error.detail ?? {}) as { newBalance?: number; overpaid?: number; reason?: 'no_statement' | 'all_paid'; amount?: number };
+      const detail = (r.error.detail ?? {}) as {
+        newBalance?: number;
+        overpaid?: number;
+        reason?: 'no_statement' | 'all_paid';
+        amount?: number;
+        countedInStatement?: boolean;
+        latestStatementDate?: string | null;
+      };
       const question =
         r.error.code === 'overpay_needs_confirm'
           ? { body: `這張卡本期應繳 ${ntd(detail.newBalance ?? 0)}，這次會溢繳 ${ntd(detail.overpaid ?? 0)}，確定照這個金額記嗎？`, label: '確定溢繳' }
-          : {
-              body: `${detail.reason === 'all_paid' ? '這張卡最近一期帳單已經繳清' : '這張卡還沒有登錄帳單'}，這筆 ${ntd(detail.amount ?? 0)} 會先記成預繳，下期帳單建立時自動抵扣。確定照這樣記嗎？`,
-              label: '確定預繳',
-            };
+          : detail.countedInStatement
+            ? {
+                // 規則 A：付款日在最近一期結帳日當天或以前 → 已算進那期帳單的應繳，只記付款、不當預繳
+                body: `這筆 ${ntd(detail.amount ?? 0)} 的付款日在這張卡最近一期結帳日（${detail.latestStatementDate ?? ''}）當天或以前，視為已算進那期帳單的應繳，只記錄付款、不會再抵扣。確定照這樣記嗎？`,
+                label: '確定記錄',
+              }
+            : {
+                body: `${detail.reason === 'all_paid' ? '這張卡最近一期帳單已經繳清' : '這張卡還沒有登錄帳單'}，這筆 ${ntd(detail.amount ?? 0)} 會先記成預繳。下期帳單建立時，若這筆是在結帳日之後付的，會自動抵扣；結帳日當天或以前付的，視為已算進那期帳單的應繳，不會重複扣。確定照這樣記嗎？`,
+                label: '確定預繳',
+              };
       await reply(replyToken, [
         ...(transfers.length ? [transferCarousel(await cardsOf(member, transfers, candidates, members))] : []),
         text(question.body, {

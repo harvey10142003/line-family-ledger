@@ -525,7 +525,7 @@ test('「從臺銀繳台新卡 3000」（台新卡還沒有帳單）→ 問確�
   assert.equal(b1[A.bot] - b0[A.bot], -3000);
   assert.equal((await call('shark', 'GET', `/credit-cards/${card.id}/statements`)).json.prepaid, 3000);
 
-  const st = await call('shark', 'POST', `/credit-cards/${card.id}/statements`, { statementDate: '2026-11-10', dueDate: '2099-11-25', newBalance: 4000 });
+  const st = await call('shark', 'POST', `/credit-cards/${card.id}/statements`, { statementDate: '2026-11-01', dueDate: '2099-11-25', newBalance: 4000 });
   assert.deepEqual([st.json.paidAmount, st.json.status, st.json.remaining], [3000, 'PARTIAL', 1000]);
   await call('shark', 'POST', `/transfers/${tr.id}/undo`);
   await prisma.cardStatement.deleteMany({ where: { cardId: card.id } });

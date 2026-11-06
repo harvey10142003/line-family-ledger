@@ -4,13 +4,14 @@
 // - 帳戶餘額＝期初＋asOf 以前的收支＋asOf 以前的轉帳（只算沒撤銷的；D18 依確認狀態只算生效的那幾端）
 // - 負債剩餘本金＝目前剩餘本金 − asOf 之後已生效轉帳造成的變動（還款、借出、借入、收回）
 // - 信用卡已出帳未繳＝asOf 以前最近一期帳單的「應繳 − 已繳」，已繳扣掉 asOf 之後才繳的那幾筆；
-//   再扣掉預繳（asOf 以前已生效、在 asOf 時還沒沖到任何一期的繳卡費）——溢繳、預繳都會讓它變負數＝算成資產
+//   再扣掉預繳（asOf 以前已生效、在 asOf 時還沒沖到任何一期、付款日晚於 asOf 時最近一期結帳日的繳卡費；規則 A：
+//   結帳日當天或以前付的已算進那期帳單的應繳，不再扣）——溢繳、預繳都會讓它變負數＝算成資產
 // - 代墊公司費用＝asOf 以前 bookTo=BUSINESS、還沒歸墊（PENDING／CLAIMED）的加總
 // 快照存下來之後就不再跟著舊資料變（要重算要手動按），所以歷史點不會跳。
 import { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
 import { AccessScope } from '../lib/access';
-import { activeLegs, liabilityEffect } from '../lib/transfer-rules';
+import { activeLegs, isPrepaidAfterClosing, liabilityEffect } from '../lib/transfer-rules';
 import { computeNetWorth, isMonth, monthEndTaipei, monthsBetween, previousMonthTaipei, type NetWorthResult, type NWInput } from '../lib/net-worth';
 import { ymdTaipei } from '../lib/time-tw';
 import { loadAccessScope } from './access';
@@ -48,6 +49,9 @@ async function rawAt(familyId: string, asOf: Date | null) {
   const cardPaidAfter = new Map<string, number>(); // asOf 之後才繳、沖到某期帳單的金額
   const stmtIds = new Set(statements.map((s) => s.id)); // asOf 時已存在（結帳日在 asOf 以前）的帳單
   const cardPrepaid = new Map<string, number>(); // asOf 時還沒沖到任何一期的繳卡費（預繳）
+  // statements 已依結帳日新到舊、只含 asOf 以前出帳的 → 每張卡第一筆＝asOf 時最近一期
+  const latestStmt = new Map<string, (typeof statements)[number]>();
+  for (const s of statements) if (!latestStmt.has(s.cardId)) latestStmt.set(s.cardId, s);
   for (const tr of transfers) {
     const legs = activeLegs(tr);
     const amt = n(tr.amount);
@@ -55,8 +59,15 @@ async function rawAt(familyId: string, asOf: Date | null) {
     if (!after) {
       if (tr.fromAccountId && legs.from) add(tr.fromAccountId, -amt);
       if (tr.toAccountId && legs.to) add(tr.toAccountId, amt);
-      // 預繳：已生效（帳單效果只有 CONFIRMED 才套用），而 asOf 時還沒沖到帳單（沒沖、或沖到的那期 asOf 時還沒出帳）
-      if (tr.kind === 'CARD_PAYMENT' && tr.toCreditCardId && tr.confirmStatus === 'CONFIRMED' && (!tr.cardStatementId || !stmtIds.has(tr.cardStatementId))) {
+      // 預繳：已生效（帳單效果只有 CONFIRMED 才套用），而 asOf 時還沒沖到帳單（沒沖、或沖到的那期 asOf 時還沒出帳），
+      // 而且付款日晚於 asOf 時最近一期的結帳日（規則 A；當天或以前付的已在那期應繳裡）
+      if (
+        tr.kind === 'CARD_PAYMENT' &&
+        tr.toCreditCardId &&
+        tr.confirmStatus === 'CONFIRMED' &&
+        (!tr.cardStatementId || !stmtIds.has(tr.cardStatementId)) &&
+        isPrepaidAfterClosing(tr.transferredAt, latestStmt.get(tr.toCreditCardId)?.statementDate)
+      ) {
         cardPrepaid.set(tr.toCreditCardId, (cardPrepaid.get(tr.toCreditCardId) ?? 0) + amt);
       }
       continue;
@@ -67,9 +78,6 @@ async function rawAt(familyId: string, asOf: Date | null) {
     if (eff && lid) liaAfter.set(lid, (liaAfter.get(lid) ?? 0) + eff.current);
     if (tr.cardStatementId) cardPaidAfter.set(tr.cardStatementId, (cardPaidAfter.get(tr.cardStatementId) ?? 0) + amt);
   }
-
-  const latestStmt = new Map<string, (typeof statements)[number]>();
-  for (const s of statements) if (!latestStmt.has(s.cardId)) latestStmt.set(s.cardId, s);
 
   return {
     members,

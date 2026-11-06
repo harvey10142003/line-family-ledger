@@ -15,6 +15,7 @@ import {
   checkShape,
   checkSplit,
   CONFIRM_WINDOW_MS,
+  isPrepaidAfterClosing,
   isTransferKind,
   liabilityEffect,
   linkedEntries,
@@ -106,15 +107,19 @@ async function pickStatement(tx: Tx, familyId: string, cardId: string, statement
 }
 
 /**
- * 某張卡的「預繳／溢繳餘額」：已生效、沒撤銷、還沒沖到任何一期帳單的繳卡費加總。
+ * 某張卡的「預繳」：已生效、沒撤銷、還沒沖到任何一期帳單，而且付款日在最近一期結帳日之後（規則 A，isPrepaidAfterClosing）的繳卡費加總。
  * 不另開欄位：沖到帳單時把那筆轉帳的 cardStatementId 填上即可（card-statement.ts），撤銷照舊（沒沖帳單＝沒東西要還原）。
+ * 結帳日當天或以前付、沒沖帳單的那幾筆＝已被銀行帳單的本期應繳計入，cardStatementId 一樣留空，只是不算預繳。
  */
 export async function cardPrepaid(db: Tx | typeof prisma, familyId: string, cardId: string): Promise<number> {
-  const r = await db.transfer.aggregate({
-    where: { familyId, kind: 'CARD_PAYMENT', toCreditCardId: cardId, cardStatementId: null, undoneAt: null, confirmStatus: 'CONFIRMED' },
-    _sum: { amount: true },
-  });
-  return r2(n(r._sum.amount));
+  const [latest, rows] = await Promise.all([
+    db.cardStatement.findFirst({ where: { familyId, cardId }, orderBy: { statementDate: 'desc' }, select: { statementDate: true } }),
+    db.transfer.findMany({
+      where: { familyId, kind: 'CARD_PAYMENT', toCreditCardId: cardId, cardStatementId: null, undoneAt: null, confirmStatus: 'CONFIRMED' },
+      select: { amount: true, transferredAt: true },
+    }),
+  ]);
+  return r2(rows.filter((t) => isPrepaidAfterClosing(t.transferredAt, latest?.statementDate)).reduce((sum, t) => sum + n(t.amount), 0));
 }
 
 /** 帳單已繳金額加 delta 後重算狀態（在交易內做，UPDATE 會鎖住該列，同時繳兩次也不會算錯）。 */
@@ -210,15 +215,28 @@ async function applyEffects(
     const s = await pickStatement(tx, familyId, to.id, p.cardStatementId);
     if (!s) {
       // 沒有可沖的帳單（卡還沒有帳單，或最近一期已繳清又再繳）：錢不能憑空消失——
-      // 確認後記成這張卡的「預繳」（cardStatementId 留空），淨資產算成資產；之後建立新帳單時自動抵扣（card-statement.ts）。
+      // 確認後記成這張卡的「預繳」（cardStatementId 留空），淨資產算成資產；之後建立新帳單時，結帳日之後付的才自動抵扣（規則 A，card-statement.ts）。
       if (!p.confirmOverpay) {
-        const latest = await tx.cardStatement.findFirst({ where: { familyId, cardId: to.id }, orderBy: { statementDate: 'desc' }, select: { id: true } });
-        throw new TransferRuleError('no_statement_needs_confirm', latest ? '這張卡最近一期帳單已繳清，這筆會記成預繳' : '這張卡還沒有帳單，這筆會記成預繳', 409, {
-          reason: latest ? 'all_paid' : 'no_statement',
-          latestStatementId: latest?.id ?? null,
-          prepaidBefore: await cardPrepaid(tx, familyId, to.id),
-          amount,
-        });
+        const latest = await tx.cardStatement.findFirst({ where: { familyId, cardId: to.id }, orderBy: { statementDate: 'desc' }, select: { id: true, statementDate: true } });
+        // 規則 A：付款日在最近一期結帳日當天或以前 → 已算進那期帳單的應繳，記下來但不當預繳（不會再抵扣）
+        const countedInStatement = !isPrepaidAfterClosing(p.transferredAt, latest?.statementDate);
+        throw new TransferRuleError(
+          'no_statement_needs_confirm',
+          countedInStatement
+            ? '付款日在最近一期結帳日當天或以前，視為已算進那期帳單的應繳，不會再抵扣'
+            : latest
+              ? '這張卡最近一期帳單已繳清，這筆會記成預繳'
+              : '這張卡還沒有帳單，這筆會記成預繳',
+          409,
+          {
+            reason: latest ? 'all_paid' : 'no_statement',
+            latestStatementId: latest?.id ?? null,
+            latestStatementDate: latest ? ymdTaipei(latest.statementDate) : null,
+            countedInStatement,
+            prepaidBefore: await cardPrepaid(tx, familyId, to.id),
+            amount,
+          },
+        );
       }
     } else {
       statement = await bumpStatement(tx, s.id, amount, p.now);

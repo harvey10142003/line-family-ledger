@@ -5,6 +5,7 @@ import type { TransferKind } from '@prisma/client';
 import {
   checkShape,
   checkSplit,
+  isPrepaidAfterClosing,
   liabilityEffect,
   linkedEntries,
   money,
@@ -140,4 +141,15 @@ test('金額：正數、四捨五入到分；0、負數、非數字丟錯', () =
   assert.equal(money('99.999', 'amount'), 100);
   assert.equal(money(0, 'fee', { allowZero: true }), 0);
   for (const bad of [0, -1, 'abc', null, undefined, NaN, Infinity]) assert.throws(() => money(bad, 'amount'));
+});
+
+test('預繳規則 A：付款日（台北日期）晚於結帳日才算預繳；當天或以前＝已算進帳單；沒帳單一律算', () => {
+  const closing = new Date('2026-11-05T12:00:00+08:00');
+  assert.equal(isPrepaidAfterClosing(new Date('2026-11-04T23:00:00+08:00'), closing), false);
+  assert.equal(isPrepaidAfterClosing(new Date('2026-11-05T00:00:00+08:00'), closing), false);
+  assert.equal(isPrepaidAfterClosing(new Date('2026-11-05T23:59:59+08:00'), closing), false);
+  assert.equal(isPrepaidAfterClosing(new Date('2026-11-06T00:00:00+08:00'), closing), true, 'UTC 仍是 11/5，台北已是 11/6');
+  assert.equal(isPrepaidAfterClosing(new Date('2026-12-01T12:00:00+08:00'), closing), true);
+  assert.equal(isPrepaidAfterClosing(new Date('2026-01-01T00:00:00+08:00'), null), true);
+  assert.equal(isPrepaidAfterClosing(new Date('2026-01-01T00:00:00+08:00'), undefined), true);
 });

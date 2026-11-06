@@ -434,7 +434,7 @@ export function buildLiffRouter(auth: RequestHandler): Router {
     try {
       const items = await getCardStatements(member.familyId, req.params.id, scope);
       await recordPersonalViews({ scope, channel: 'LIFF', targetType: 'CARD_STATEMENT', targetId: req.params.id, owners: [scope.card(req.params.id)?.ownerMemberId] });
-      // prepaid：還沒沖到任何一期的繳卡費（預繳），下一期帳單建立時自動抵扣
+      // prepaid：還沒沖到任何一期、付款日晚於最近一期結帳日的繳卡費（預繳，規則 A）；下一期帳單建立時自動抵扣
       return res.json({ items, prepaid: await getCardPrepaid(member.familyId, req.params.id) });
     } catch (err) {
       return fail(res, err);

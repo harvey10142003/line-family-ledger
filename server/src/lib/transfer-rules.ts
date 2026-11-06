@@ -4,6 +4,7 @@
 // 核心原則：轉帳本身永遠不算收入也不算支出，只移動餘額（帳戶 ↔ 帳戶／卡／負債）。
 // 會另外產生收支的只有：利息（還貸款＝支出；收回借款、定存解約或到期＝收入）與手續費（支出）。
 import type { AccountType, CardStatementStatus, LiabilityDirection, TransferConfirmStatus, TransferKind, TransferSide } from '@prisma/client';
+import { ymdTaipei } from './time-tw';
 
 export const TRANSFER_KINDS: readonly TransferKind[] = [
   'ACCOUNT',
@@ -202,6 +203,16 @@ export function checkSplit(total: number | null | undefined, amount: number, int
       fee,
     });
   }
+}
+
+/**
+ * 預繳抵扣規則 A（Shark 11-06）：沒沖到帳單的繳卡費，只有「付款日（台北日期）晚於結帳日」的才算預繳、建帳單時才抵扣。
+ * 結帳日當天或以前付的＝銀行帳單的「本期應繳」已經扣掉了，不再抵扣、也不再算進淨資產的預繳（否則重複扣）。
+ * latestStatementDate＝這張卡（在那個時間點）最近一期的結帳日；沒有帳單 → 一律算預繳。
+ */
+export function isPrepaidAfterClosing(paidAt: Date, latestStatementDate: Date | null | undefined): boolean {
+  if (!latestStatementDate) return true;
+  return ymdTaipei(paidAt) > ymdTaipei(latestStatementDate);
 }
 
 /**
